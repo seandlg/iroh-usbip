@@ -3,10 +3,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::{UsbDevice, UsbDeviceHandle};
 use crate::protocol::{
     OP_REQ_DEVLIST, OP_REP_DEVLIST, OP_REQ_IMPORT, OP_REP_IMPORT,
-    USBIP_CMD_SUBMIT, USBIP_RET_SUBMIT, USBIP_CMD_UNLINK,
+    USBIP_CMD_SUBMIT, USBIP_RET_SUBMIT, USBIP_CMD_UNLINK, USBIP_RET_UNLINK,
     USBIP_VERSION, pad_string, map_speed,
     UsbipUsbDevice, UsbipUsbInterface,
     OpCommon, OpDevlistReply, OpImportRequest, ST_OK, ST_NA, ST_DEV_BUSY,
+    UsbipHeaderBasic, UsbipHeaderCmdSubmit, UsbipHeaderRetSubmit,
+    UsbipHeaderCmdUnlink, UsbipHeaderRetUnlink,
 };
 
 pub async fn run_usbip_session<S, D>(mut stream: S, devices: Vec<Arc<D>>) -> anyhow::Result<()>
@@ -211,37 +213,33 @@ where
                         break;
                     }
 
-                    let command = u32::from_be_bytes([cmd_buf[0], cmd_buf[1], cmd_buf[2], cmd_buf[3]]);
-                    let seqnum = u32::from_be_bytes([cmd_buf[4], cmd_buf[5], cmd_buf[6], cmd_buf[7]]);
-                    let devid = u32::from_be_bytes([cmd_buf[8], cmd_buf[9], cmd_buf[10], cmd_buf[11]]);
-                    let direction = u32::from_be_bytes([cmd_buf[12], cmd_buf[13], cmd_buf[14], cmd_buf[15]]);
-                    let ep = u32::from_be_bytes([cmd_buf[16], cmd_buf[17], cmd_buf[18], cmd_buf[19]]);
+                    let mut basic_bytes = [0u8; 20];
+                    basic_bytes.copy_from_slice(&cmd_buf[0..20]);
+                    let basic = UsbipHeaderBasic::from_bytes(basic_bytes);
 
-                    match command {
+                    let mut payload_bytes = [0u8; 28];
+                    payload_bytes.copy_from_slice(&cmd_buf[20..48]);
+
+                    match basic.command {
                         USBIP_CMD_SUBMIT => {
-                            let _transfer_flags = u32::from_be_bytes([cmd_buf[20], cmd_buf[21], cmd_buf[22], cmd_buf[23]]);
-                            let transfer_buffer_length = i32::from_be_bytes([cmd_buf[24], cmd_buf[25], cmd_buf[26], cmd_buf[27]]);
-                            let _start_frame = i32::from_be_bytes([cmd_buf[28], cmd_buf[29], cmd_buf[30], cmd_buf[31]]);
-                            let _number_of_packets = i32::from_be_bytes([cmd_buf[32], cmd_buf[33], cmd_buf[34], cmd_buf[35]]);
-                            let _interval = i32::from_be_bytes([cmd_buf[36], cmd_buf[37], cmd_buf[38], cmd_buf[39]]);
-                            let setup = &cmd_buf[40..48];
+                            let cmd_submit = UsbipHeaderCmdSubmit::from_bytes(payload_bytes);
 
                             // Read OUT data if direction is OUT (0)
-                            let mut data = vec![0u8; transfer_buffer_length.max(0) as usize];
-                            if direction == 0 && transfer_buffer_length > 0 {
+                            let mut data = vec![0u8; cmd_submit.transfer_buffer_length.max(0) as usize];
+                            if basic.direction == 0 && cmd_submit.transfer_buffer_length > 0 {
                                 stream.read_exact(&mut data).await?;
                             }
 
                             let timeout = std::time::Duration::from_secs(5);
-                            let transfer_res: (i32, Vec<u8>) = if ep == 0 {
-                                let bm_request_type = setup[0];
-                                let b_request = setup[1];
-                                let w_value = u16::from_le_bytes([setup[2], setup[3]]);
-                                let w_index = u16::from_le_bytes([setup[4], setup[5]]);
+                            let transfer_res: (i32, Vec<u8>) = if basic.ep == 0 {
+                                let bm_request_type = cmd_submit.setup[0];
+                                let b_request = cmd_submit.setup[1];
+                                let w_value = u16::from_le_bytes([cmd_submit.setup[2], cmd_submit.setup[3]]);
+                                let w_index = u16::from_le_bytes([cmd_submit.setup[4], cmd_submit.setup[5]]);
 
-                                if direction == 1 {
+                                if basic.direction == 1 {
                                     // Control Read
-                                    let mut buf = vec![0u8; transfer_buffer_length.max(0) as usize];
+                                    let mut buf = vec![0u8; cmd_submit.transfer_buffer_length.max(0) as usize];
                                     match handle.read_control(bm_request_type, b_request, w_value, w_index, &mut buf, timeout) {
                                         Ok(len) => {
                                             buf.truncate(len);
@@ -257,7 +255,7 @@ where
                                     }
                                 }
                             } else {
-                                let ep_addr = (ep as u8) | if direction == 1 { 0x80 } else { 0x00 };
+                                let ep_addr = (basic.ep as u8) | if basic.direction == 1 { 0x80 } else { 0x00 };
 
                                 let mut is_interrupt = false;
                                 if let Ok(cfg) = dev.config_descriptor(0) {
@@ -276,8 +274,8 @@ where
                                 }
 
                                 if is_interrupt {
-                                    if direction == 1 {
-                                        let mut buf = vec![0u8; transfer_buffer_length.max(0) as usize];
+                                    if basic.direction == 1 {
+                                        let mut buf = vec![0u8; cmd_submit.transfer_buffer_length.max(0) as usize];
                                         match handle.read_interrupt(ep_addr, &mut buf, timeout) {
                                             Ok(len) => {
                                                 buf.truncate(len);
@@ -293,8 +291,8 @@ where
                                     }
                                 } else {
                                     // Default to Bulk
-                                    if direction == 1 {
-                                        let mut buf = vec![0u8; transfer_buffer_length.max(0) as usize];
+                                    if basic.direction == 1 {
+                                        let mut buf = vec![0u8; cmd_submit.transfer_buffer_length.max(0) as usize];
                                         match handle.read_bulk(ep_addr, &mut buf, timeout) {
                                             Ok(len) => {
                                                 buf.truncate(len);
@@ -313,45 +311,52 @@ where
 
                             let (status, resp_data) = transfer_res;
 
-                            let mut resp = Vec::new();
-                            resp.extend_from_slice(&USBIP_RET_SUBMIT.to_be_bytes());
-                            resp.extend_from_slice(&seqnum.to_be_bytes());
-                            resp.extend_from_slice(&devid.to_be_bytes());
-                            resp.extend_from_slice(&direction.to_be_bytes());
-                            resp.extend_from_slice(&ep.to_be_bytes());
-
-                            resp.extend_from_slice(&status.to_be_bytes());
-                            resp.extend_from_slice(&(resp_data.len() as i32).to_be_bytes());
-                            resp.extend_from_slice(&0i32.to_be_bytes()); // start_frame
-                            resp.extend_from_slice(&0i32.to_be_bytes()); // number_of_packets
-                            resp.extend_from_slice(&0i32.to_be_bytes()); // error_count
-                            resp.extend_from_slice(&[0; 8]); // setup padding
-
-                            if direction == 1 {
-                                resp.extend_from_slice(&resp_data);
-                            }
+                            let resp_basic = UsbipHeaderBasic {
+                                command: USBIP_RET_SUBMIT,
+                                seqnum: basic.seqnum,
+                                devid: basic.devid,
+                                direction: basic.direction,
+                                ep: basic.ep,
+                            };
+                            let resp_submit = UsbipHeaderRetSubmit {
+                                status,
+                                actual_length: resp_data.len() as i32,
+                                start_frame: 0,
+                                number_of_packets: 0,
+                                error_count: 0,
+                            };
+                            let mut resp = [0u8; 48];
+                            resp[0..20].copy_from_slice(&resp_basic.to_bytes());
+                            resp[20..48].copy_from_slice(&resp_submit.to_bytes());
 
                             stream.write_all(&resp).await?;
+                            if basic.direction == 1 {
+                                stream.write_all(&resp_data).await?;
+                            }
                             stream.flush().await?;
                         }
                         USBIP_CMD_UNLINK => {
-                            let _unlink_seqnum = u32::from_be_bytes([cmd_buf[20], cmd_buf[21], cmd_buf[22], cmd_buf[23]]);
+                            let _cmd_unlink = UsbipHeaderCmdUnlink::from_bytes(payload_bytes);
 
-                            let mut resp = Vec::new();
-                            resp.extend_from_slice(&crate::protocol::USBIP_RET_UNLINK.to_be_bytes());
-                            resp.extend_from_slice(&seqnum.to_be_bytes());
-                            resp.extend_from_slice(&devid.to_be_bytes());
-                            resp.extend_from_slice(&direction.to_be_bytes());
-                            resp.extend_from_slice(&ep.to_be_bytes());
-
-                            resp.extend_from_slice(&(-104i32).to_be_bytes());
-                            resp.extend_from_slice(&[0; 24]);
+                            let resp_basic = UsbipHeaderBasic {
+                                command: USBIP_RET_UNLINK,
+                                seqnum: basic.seqnum,
+                                devid: basic.devid,
+                                direction: basic.direction,
+                                ep: basic.ep,
+                            };
+                            let resp_unlink = UsbipHeaderRetUnlink {
+                                status: -104, // -ECONNRESET
+                            };
+                            let mut resp = [0u8; 48];
+                            resp[0..20].copy_from_slice(&resp_basic.to_bytes());
+                            resp[20..48].copy_from_slice(&resp_unlink.to_bytes());
 
                             stream.write_all(&resp).await?;
                             stream.flush().await?;
                         }
                         _ => {
-                            anyhow::bail!("Unknown transfer command: {:08x}", command);
+                            anyhow::bail!("Unknown transfer command: {:08x}", basic.command);
                         }
                     }
                 }

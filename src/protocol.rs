@@ -155,6 +155,145 @@ pub const ST_OK: u32 = 0x00;
 pub const ST_NA: u32 = 0x01;
 pub const ST_DEV_BUSY: u32 = 0x02;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsbipHeaderBasic {
+    pub command: u32,
+    pub seqnum: u32,
+    pub devid: u32,
+    pub direction: u32,
+    pub ep: u32,
+}
+
+impl UsbipHeaderBasic {
+    pub fn to_bytes(&self) -> [u8; 20] {
+        let mut buf = [0u8; 20];
+        buf[0..4].copy_from_slice(&self.command.to_be_bytes());
+        buf[4..8].copy_from_slice(&self.seqnum.to_be_bytes());
+        buf[8..12].copy_from_slice(&self.devid.to_be_bytes());
+        buf[12..16].copy_from_slice(&self.direction.to_be_bytes());
+        buf[16..20].copy_from_slice(&self.ep.to_be_bytes());
+        buf
+    }
+
+    pub fn from_bytes(bytes: [u8; 20]) -> Self {
+        Self {
+            command: u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            seqnum: u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+            devid: u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
+            direction: u32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]),
+            ep: u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsbipHeaderCmdSubmit {
+    pub transfer_flags: u32,
+    pub transfer_buffer_length: i32,
+    pub start_frame: i32,
+    pub number_of_packets: i32,
+    pub interval: i32,
+    pub setup: [u8; 8],
+}
+
+impl UsbipHeaderCmdSubmit {
+    pub fn to_bytes(&self) -> [u8; 28] {
+        let mut buf = [0u8; 28];
+        buf[0..4].copy_from_slice(&self.transfer_flags.to_be_bytes());
+        buf[4..8].copy_from_slice(&self.transfer_buffer_length.to_be_bytes());
+        buf[8..12].copy_from_slice(&self.start_frame.to_be_bytes());
+        buf[12..16].copy_from_slice(&self.number_of_packets.to_be_bytes());
+        buf[16..20].copy_from_slice(&self.interval.to_be_bytes());
+        buf[20..28].copy_from_slice(&self.setup);
+        buf
+    }
+
+    pub fn from_bytes(bytes: [u8; 28]) -> Self {
+        let mut setup = [0u8; 8];
+        setup.copy_from_slice(&bytes[20..28]);
+        Self {
+            transfer_flags: u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            transfer_buffer_length: i32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+            start_frame: i32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
+            number_of_packets: i32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]),
+            interval: i32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]),
+            setup,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsbipHeaderRetSubmit {
+    pub status: i32,
+    pub actual_length: i32,
+    pub start_frame: i32,
+    pub number_of_packets: i32,
+    pub error_count: i32,
+}
+
+impl UsbipHeaderRetSubmit {
+    pub fn to_bytes(&self) -> [u8; 28] {
+        let mut buf = [0u8; 28];
+        buf[0..4].copy_from_slice(&self.status.to_be_bytes());
+        buf[4..8].copy_from_slice(&self.actual_length.to_be_bytes());
+        buf[8..12].copy_from_slice(&self.start_frame.to_be_bytes());
+        buf[12..16].copy_from_slice(&self.number_of_packets.to_be_bytes());
+        buf[16..20].copy_from_slice(&self.error_count.to_be_bytes());
+        // Remaining 8 bytes (20..28) are zeroed setup padding
+        buf
+    }
+
+    pub fn from_bytes(bytes: [u8; 28]) -> Self {
+        Self {
+            status: i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            actual_length: i32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+            start_frame: i32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
+            number_of_packets: i32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]),
+            error_count: i32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsbipHeaderCmdUnlink {
+    pub seqnum: u32,
+}
+
+impl UsbipHeaderCmdUnlink {
+    pub fn to_bytes(&self) -> [u8; 28] {
+        let mut buf = [0u8; 28];
+        buf[0..4].copy_from_slice(&self.seqnum.to_be_bytes());
+        // Remaining 24 bytes (4..28) are zeroed padding
+        buf
+    }
+
+    pub fn from_bytes(bytes: [u8; 28]) -> Self {
+        Self {
+            seqnum: u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsbipHeaderRetUnlink {
+    pub status: i32,
+}
+
+impl UsbipHeaderRetUnlink {
+    pub fn to_bytes(&self) -> [u8; 28] {
+        let mut buf = [0u8; 28];
+        buf[0..4].copy_from_slice(&self.status.to_be_bytes());
+        // Remaining 24 bytes (4..28) are zeroed padding
+        buf
+    }
+
+    pub fn from_bytes(bytes: [u8; 28]) -> Self {
+        Self {
+            status: i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+        }
+    }
+}
+
 #[cfg(test)]
 
 mod tests {
@@ -194,6 +333,110 @@ mod tests {
 
         let deserialized = OpImportRequest::from_bytes(bytes);
         assert_eq!(deserialized, request);
+    }
+
+    #[test]
+    fn test_usbip_header_basic_serialization() {
+        let basic = UsbipHeaderBasic {
+            command: 0x0001,
+            seqnum: 42,
+            devid: 100,
+            direction: 1,
+            ep: 3,
+        };
+        let bytes = basic.to_bytes();
+        let expected = [
+            0x00, 0x00, 0x00, 0x01, // command
+            0x00, 0x00, 0x00, 0x2a, // seqnum (42)
+            0x00, 0x00, 0x00, 0x64, // devid (100)
+            0x00, 0x00, 0x00, 0x01, // direction
+            0x00, 0x00, 0x00, 0x03, // ep
+        ];
+        assert_eq!(bytes, expected);
+
+        let deserialized = UsbipHeaderBasic::from_bytes(bytes);
+        assert_eq!(deserialized, basic);
+    }
+
+    #[test]
+    fn test_usbip_header_cmd_submit_serialization() {
+        let cmd_submit = UsbipHeaderCmdSubmit {
+            transfer_flags: 1,
+            transfer_buffer_length: 512,
+            start_frame: 2,
+            number_of_packets: 3,
+            interval: 4,
+            setup: [1, 2, 3, 4, 5, 6, 7, 8],
+        };
+        let bytes = cmd_submit.to_bytes();
+        let expected = [
+            0x00, 0x00, 0x00, 0x01, // transfer_flags
+            0x00, 0x00, 0x02, 0x00, // transfer_buffer_length (512)
+            0x00, 0x00, 0x00, 0x02, // start_frame
+            0x00, 0x00, 0x00, 0x03, // number_of_packets
+            0x00, 0x00, 0x00, 0x04, // interval
+            1, 2, 3, 4, 5, 6, 7, 8, // setup
+        ];
+        assert_eq!(bytes, expected);
+
+        let deserialized = UsbipHeaderCmdSubmit::from_bytes(bytes);
+        assert_eq!(deserialized, cmd_submit);
+    }
+
+    #[test]
+    fn test_usbip_header_ret_submit_serialization() {
+        let ret_submit = UsbipHeaderRetSubmit {
+            status: -32,
+            actual_length: 128,
+            start_frame: 0,
+            number_of_packets: 0,
+            error_count: 0,
+        };
+        let bytes = ret_submit.to_bytes();
+        let expected = [
+            0xff, 0xff, 0xff, 0xe0, // status (-32)
+            0x00, 0x00, 0x00, 0x80, // actual_length (128)
+            0x00, 0x00, 0x00, 0x00, // start_frame (0)
+            0x00, 0x00, 0x00, 0x00, // number_of_packets (0)
+            0x00, 0x00, 0x00, 0x00, // error_count (0)
+            0, 0, 0, 0, 0, 0, 0, 0, // setup padding (8 bytes)
+        ];
+        assert_eq!(bytes, expected);
+
+        let deserialized = UsbipHeaderRetSubmit::from_bytes(bytes);
+        assert_eq!(deserialized, ret_submit);
+    }
+
+    #[test]
+    fn test_usbip_header_cmd_unlink_serialization() {
+        let cmd_unlink = UsbipHeaderCmdUnlink { seqnum: 99 };
+        let bytes = cmd_unlink.to_bytes();
+        let expected = [
+            0x00, 0x00, 0x00, 0x63, // seqnum (99)
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, // 24 bytes of padding
+        ];
+        assert_eq!(bytes, expected);
+
+        let deserialized = UsbipHeaderCmdUnlink::from_bytes(bytes);
+        assert_eq!(deserialized, cmd_unlink);
+    }
+
+    #[test]
+    fn test_usbip_header_ret_unlink_serialization() {
+        let ret_unlink = UsbipHeaderRetUnlink { status: -104 };
+        let bytes = ret_unlink.to_bytes();
+        let expected = [
+            0xff, 0xff, 0xff, 0x98, // status (-104)
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, // 24 bytes of padding
+        ];
+        assert_eq!(bytes, expected);
+
+        let deserialized = UsbipHeaderRetUnlink::from_bytes(bytes);
+        assert_eq!(deserialized, ret_unlink);
     }
 }
 
