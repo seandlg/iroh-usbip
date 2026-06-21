@@ -157,16 +157,21 @@ async fn main() -> anyhow::Result<()> {
             if let Some(incoming) = endpoint.accept().await {
                 let conn = incoming.await?;
                 println!("Client connected! Establishing stream...");
-                let (send, recv) = conn.accept_bi().await?;
-                let stream = IrohStream { send, recv };
-                println!("Session started. Redirecting USB traffic.");
-                let static_registry = HostDeviceRegistry::new_static(vec![Arc::clone(&dev)]);
-                if let Err(e) =
-                    iroh_usbip::engine::run_usbip_session(stream, Arc::new(static_registry)).await
-                {
-                    eprintln!("Session error: {}", e);
+                let static_registry =
+                    Arc::new(HostDeviceRegistry::new_static(vec![Arc::clone(&dev)]));
+                while let Ok((send, recv)) = conn.accept_bi().await {
+                    let stream = IrohStream { send, recv };
+                    let registry = Arc::clone(&static_registry);
+                    tokio::spawn(async move {
+                        println!("Session started. Redirecting USB traffic.");
+                        if let Err(e) =
+                            iroh_usbip::engine::run_usbip_session(stream, registry).await
+                        {
+                            eprintln!("Session error: {}", e);
+                        }
+                        println!("Session ended. Detaching client.");
+                    });
                 }
-                println!("Session ended. Detaching client.");
             }
 
             endpoint.close().await;
