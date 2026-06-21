@@ -4,7 +4,7 @@
 
 Secure P2P USB-over-IP. Tunnel physical USB devices to remote clients over encrypted Iroh P2P streams with zero network configuration.
 
-[![asciicast](https://asciinema.org/a/dAc9YddFvIhRtANi.svg)](https://asciinema.org/a/dAc9YddFvIhRtANi)
+![iroh-usbip demo](docs/assets/demo.gif)
 
 ## Documentation Index
 
@@ -95,7 +95,7 @@ sequenceDiagram
 #### Concrete Walkthrough Example (Sharing a QEMU Tablet device)
 
 Watch a live terminal recording of this walkthrough:
-[![asciicast](https://asciinema.org/a/dAc9YddFvIhRtANi.svg)](https://asciinema.org/a/dAc9YddFvIhRtANi)
+![iroh-usbip demo](docs/assets/demo.gif)
 
 ##### 1. List physical USB devices on the Host
 Find the Vendor/Product IDs (VID/PID) of the device you want to share:
