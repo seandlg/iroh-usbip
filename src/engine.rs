@@ -369,6 +369,9 @@ mod tests {
             open_error: None,
             kernel_drivers: None,
             claimed_interfaces: None,
+            manufacturer: "Mock Manufacturer".to_string(),
+            product: "Mock Product".to_string(),
+            serial_number: "Mock Serial".to_string(),
         };
 
         let mut handle = dev.open().unwrap();

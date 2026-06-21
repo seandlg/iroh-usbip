@@ -1,4 +1,4 @@
-use crate::{PhysicalUsbDevice, UsbDevice, UsbDeviceHandle};
+use crate::{AnyUsbDevice, PhysicalUsbDevice, UsbDevice, UsbDeviceHandle};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -103,13 +103,77 @@ pub struct HostDeviceRegistry<D: UsbDevice + ?Sized> {
     devices: Vec<Arc<D>>,
 }
 
-impl HostDeviceRegistry<PhysicalUsbDevice> {
+impl HostDeviceRegistry<AnyUsbDevice> {
     pub fn new_physical() -> anyhow::Result<Self> {
         let mut devices = Vec::new();
         for dev in rusb::devices()?.iter() {
-            devices.push(Arc::new(PhysicalUsbDevice::new(dev)));
+            devices.push(Arc::new(AnyUsbDevice::Physical(PhysicalUsbDevice::new(
+                dev,
+            ))));
         }
         Ok(Self { devices })
+    }
+
+    pub fn new_mock() -> anyhow::Result<Self> {
+        let desc = crate::UsbDeviceDescriptor {
+            vendor_id: 0x1d6b,
+            product_id: 0x0104,
+            device_class: 0x00,
+            device_subclass: 0x00,
+            device_protocol: 0x00,
+            max_packet_size_0: 64,
+            num_configurations: 1,
+            usb_version: (2, 0),
+            device_version: (1, 0),
+            manufacturer_string_index: Some(1),
+            product_string_index: Some(2),
+            serial_number_string_index: Some(3),
+        };
+        let config = crate::UsbConfigDescriptor {
+            num_interfaces: 1,
+            configuration_value: 1,
+            max_power: 500,
+            self_powered: true,
+            remote_wakeup: false,
+            interfaces: vec![crate::UsbInterfaceDescriptor {
+                interface_number: 0,
+                settings: vec![crate::UsbInterfaceSettingDescriptor {
+                    setting_number: 0,
+                    class_code: 0x0a,
+                    sub_class_code: 0,
+                    protocol_code: 0,
+                    endpoints: vec![],
+                }],
+            }],
+        };
+        let mock_dev = crate::MockUsbDevice {
+            bus_num: 1,
+            dev_addr: 2,
+            dev_speed: crate::UsbSpeed::High,
+            descriptor: desc,
+            config_descriptor: config,
+            transfer_handler: Some(Arc::new(|action, _data| {
+                if action == "control_read:128:6:256:0" {
+                    let descriptor_bytes = vec![
+                        18, 1, 0x00, 0x02, 0, 0, 0, 64, 0x6b, 0x1d, 0x04, 0x01, 0x00, 0x01, 1, 2,
+                        3, 1,
+                    ];
+                    return Ok(descriptor_bytes);
+                }
+                Ok(vec![])
+            })),
+            dropped: None,
+            open_error: None,
+            kernel_drivers: None,
+            claimed_interfaces: None,
+            manufacturer: "Antigravity".to_string(),
+            product: "E2E_Virtual_Gadget".to_string(),
+            serial_number: "0123456789".to_string(),
+        };
+
+        Ok(Self {
+            devices: vec![Arc::new(AnyUsbDevice::Mock(mock_dev))],
+        })
     }
 }
 
@@ -252,6 +316,9 @@ mod tests {
             open_error: None,
             kernel_drivers: None,
             claimed_interfaces: None,
+            manufacturer: "Mock Manufacturer".to_string(),
+            product: "Mock Product".to_string(),
+            serial_number: "Mock Serial".to_string(),
         })
     }
 

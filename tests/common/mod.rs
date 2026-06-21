@@ -244,6 +244,9 @@ pub struct MockDeviceBuilder {
     pub open_error: Option<String>,
     pub kernel_drivers: Option<Arc<std::sync::Mutex<std::collections::HashMap<u8, bool>>>>,
     pub claimed_interfaces: Option<Arc<std::sync::Mutex<std::collections::HashSet<u8>>>>,
+    pub manufacturer: String,
+    pub product: String,
+    pub serial_number: String,
 }
 
 impl Default for MockDeviceBuilder {
@@ -285,6 +288,9 @@ impl MockDeviceBuilder {
             open_error: None,
             kernel_drivers: None,
             claimed_interfaces: None,
+            manufacturer: "Mock Manufacturer".to_string(),
+            product: "Mock Product".to_string(),
+            serial_number: "Mock Serial".to_string(),
         }
     }
 
@@ -331,6 +337,9 @@ impl MockDeviceBuilder {
             open_error: self.open_error,
             kernel_drivers: self.kernel_drivers,
             claimed_interfaces: self.claimed_interfaces,
+            manufacturer: self.manufacturer,
+            product: self.product,
+            serial_number: self.serial_number,
         })
     }
 }

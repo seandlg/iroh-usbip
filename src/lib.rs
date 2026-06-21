@@ -406,6 +406,9 @@ pub struct MockUsbDevice {
     pub open_error: Option<String>,
     pub kernel_drivers: Option<Arc<std::sync::Mutex<std::collections::HashMap<u8, bool>>>>,
     pub claimed_interfaces: Option<Arc<std::sync::Mutex<std::collections::HashSet<u8>>>>,
+    pub manufacturer: String,
+    pub product: String,
+    pub serial_number: String,
 }
 
 pub struct MockUsbDeviceHandle {
@@ -468,9 +471,9 @@ impl UsbDevice for MockUsbDevice {
             active_config: 1,
             claimed_interfaces,
             kernel_drivers_active,
-            manufacturer: "Mock Manufacturer".to_string(),
-            product: "Mock Product".to_string(),
-            serial_number: "Mock Serial".to_string(),
+            manufacturer: self.manufacturer.clone(),
+            product: self.product.clone(),
+            serial_number: self.serial_number.clone(),
             transfer_handler: self.transfer_handler.clone(),
             dropped: self.dropped.clone(),
             shared_kernel_drivers: self.kernel_drivers.clone(),
@@ -650,6 +653,351 @@ impl UsbDeviceHandle for MockUsbDeviceHandle {
     }
 }
 
+pub enum AnyUsbDevice {
+    Physical(PhysicalUsbDevice),
+    Mock(MockUsbDevice),
+}
+
+pub enum AnyUsbDeviceHandle {
+    Physical(PhysicalUsbDeviceHandle),
+    Mock(MockUsbDeviceHandle),
+}
+
+impl UsbDevice for AnyUsbDevice {
+    type Handle = AnyUsbDeviceHandle;
+
+    fn bus_number(&self) -> u8 {
+        match self {
+            Self::Physical(d) => d.bus_number(),
+            Self::Mock(d) => d.bus_number(),
+        }
+    }
+
+    fn address(&self) -> u8 {
+        match self {
+            Self::Physical(d) => d.address(),
+            Self::Mock(d) => d.address(),
+        }
+    }
+
+    fn speed(&self) -> UsbSpeed {
+        match self {
+            Self::Physical(d) => d.speed(),
+            Self::Mock(d) => d.speed(),
+        }
+    }
+
+    fn device_descriptor(&self) -> anyhow::Result<UsbDeviceDescriptor> {
+        match self {
+            Self::Physical(d) => d.device_descriptor(),
+            Self::Mock(d) => d.device_descriptor(),
+        }
+    }
+
+    fn config_descriptor(&self, index: u8) -> anyhow::Result<UsbConfigDescriptor> {
+        match self {
+            Self::Physical(d) => d.config_descriptor(index),
+            Self::Mock(d) => d.config_descriptor(index),
+        }
+    }
+
+    fn open(&self) -> anyhow::Result<Self::Handle> {
+        match self {
+            Self::Physical(d) => Ok(AnyUsbDeviceHandle::Physical(d.open()?)),
+            Self::Mock(d) => Ok(AnyUsbDeviceHandle::Mock(d.open()?)),
+        }
+    }
+}
+
+impl UsbDeviceHandle for AnyUsbDeviceHandle {
+    fn active_configuration(&self) -> anyhow::Result<u8> {
+        match self {
+            Self::Physical(h) => h.active_configuration(),
+            Self::Mock(h) => h.active_configuration(),
+        }
+    }
+
+    fn set_active_configuration(&mut self, config: u8) -> anyhow::Result<()> {
+        match self {
+            Self::Physical(h) => h.set_active_configuration(config),
+            Self::Mock(h) => h.set_active_configuration(config),
+        }
+    }
+
+    fn claim_interface(&mut self, interface: u8) -> anyhow::Result<()> {
+        match self {
+            Self::Physical(h) => h.claim_interface(interface),
+            Self::Mock(h) => h.claim_interface(interface),
+        }
+    }
+
+    fn release_interface(&mut self, interface: u8) -> anyhow::Result<()> {
+        match self {
+            Self::Physical(h) => h.release_interface(interface),
+            Self::Mock(h) => h.release_interface(interface),
+        }
+    }
+
+    fn set_alternate_setting(&mut self, interface: u8, setting: u8) -> anyhow::Result<()> {
+        match self {
+            Self::Physical(h) => h.set_alternate_setting(interface, setting),
+            Self::Mock(h) => h.set_alternate_setting(interface, setting),
+        }
+    }
+
+    fn detach_kernel_driver(&mut self, interface: u8) -> anyhow::Result<()> {
+        match self {
+            Self::Physical(h) => h.detach_kernel_driver(interface),
+            Self::Mock(h) => h.detach_kernel_driver(interface),
+        }
+    }
+
+    fn attach_kernel_driver(&mut self, interface: u8) -> anyhow::Result<()> {
+        match self {
+            Self::Physical(h) => h.attach_kernel_driver(interface),
+            Self::Mock(h) => h.attach_kernel_driver(interface),
+        }
+    }
+
+    fn kernel_driver_active(&self, interface: u8) -> anyhow::Result<bool> {
+        match self {
+            Self::Physical(h) => h.kernel_driver_active(interface),
+            Self::Mock(h) => h.kernel_driver_active(interface),
+        }
+    }
+
+    fn read_control(
+        &mut self,
+        request_type: u8,
+        request: u8,
+        value: u16,
+        index: u16,
+        buf: &mut [u8],
+        timeout: Duration,
+    ) -> anyhow::Result<usize> {
+        match self {
+            Self::Physical(h) => h.read_control(request_type, request, value, index, buf, timeout),
+            Self::Mock(h) => h.read_control(request_type, request, value, index, buf, timeout),
+        }
+    }
+
+    fn write_control(
+        &mut self,
+        request_type: u8,
+        request: u8,
+        value: u16,
+        index: u16,
+        data: &[u8],
+        timeout: Duration,
+    ) -> anyhow::Result<usize> {
+        match self {
+            Self::Physical(h) => {
+                h.write_control(request_type, request, value, index, data, timeout)
+            }
+            Self::Mock(h) => h.write_control(request_type, request, value, index, data, timeout),
+        }
+    }
+
+    fn read_bulk(
+        &mut self,
+        endpoint: u8,
+        buf: &mut [u8],
+        timeout: Duration,
+    ) -> anyhow::Result<usize> {
+        match self {
+            Self::Physical(h) => h.read_bulk(endpoint, buf, timeout),
+            Self::Mock(h) => h.read_bulk(endpoint, buf, timeout),
+        }
+    }
+
+    fn write_bulk(
+        &mut self,
+        endpoint: u8,
+        data: &[u8],
+        timeout: Duration,
+    ) -> anyhow::Result<usize> {
+        match self {
+            Self::Physical(h) => h.write_bulk(endpoint, data, timeout),
+            Self::Mock(h) => h.write_bulk(endpoint, data, timeout),
+        }
+    }
+
+    fn read_interrupt(
+        &mut self,
+        endpoint: u8,
+        buf: &mut [u8],
+        timeout: Duration,
+    ) -> anyhow::Result<usize> {
+        match self {
+            Self::Physical(h) => h.read_interrupt(endpoint, buf, timeout),
+            Self::Mock(h) => h.read_interrupt(endpoint, buf, timeout),
+        }
+    }
+
+    fn write_interrupt(
+        &mut self,
+        endpoint: u8,
+        data: &[u8],
+        timeout: Duration,
+    ) -> anyhow::Result<usize> {
+        match self {
+            Self::Physical(h) => h.write_interrupt(endpoint, data, timeout),
+            Self::Mock(h) => h.write_interrupt(endpoint, data, timeout),
+        }
+    }
+
+    fn read_manufacturer_string(&self, desc: &UsbDeviceDescriptor) -> anyhow::Result<String> {
+        match self {
+            Self::Physical(h) => h.read_manufacturer_string(desc),
+            Self::Mock(h) => h.read_manufacturer_string(desc),
+        }
+    }
+
+    fn read_product_string(&self, desc: &UsbDeviceDescriptor) -> anyhow::Result<String> {
+        match self {
+            Self::Physical(h) => h.read_product_string(desc),
+            Self::Mock(h) => h.read_product_string(desc),
+        }
+    }
+
+    fn read_serial_number_string(&self, desc: &UsbDeviceDescriptor) -> anyhow::Result<String> {
+        match self {
+            Self::Physical(h) => h.read_serial_number_string(desc),
+            Self::Mock(h) => h.read_serial_number_string(desc),
+        }
+    }
+}
+
+pub async fn run_mock_kernel_client(local_port: u16, busid: &str) -> anyhow::Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    // 1. Perform OP_REQ_DEVLIST
+    let mut stream1 = TcpStream::connect(format!("127.0.0.1:{}", local_port)).await?;
+    let mut devlist_req = Vec::new();
+    devlist_req.extend_from_slice(&[
+        0x01, 0x11, // version: 0x0111
+        0x80, 0x05, // code: OP_REQ_DEVLIST (0x8005)
+        0x00, 0x00, 0x00, 0x00, // status: 0
+    ]);
+    stream1.write_all(&devlist_req).await?;
+    stream1.flush().await?;
+
+    let mut header = [0u8; 8];
+    stream1.read_exact(&mut header).await?;
+    assert_eq!(&header[0..2], &[0x01, 0x11]);
+    assert_eq!(&header[2..4], &[0x00, 0x05]); // OP_REP_DEVLIST
+    assert_eq!(&header[4..8], &[0x00, 0x00, 0x00, 0x00]);
+
+    let mut ndev_buf = [0u8; 4];
+    stream1.read_exact(&mut ndev_buf).await?;
+    let ndev = u32::from_be_bytes(ndev_buf);
+    assert_eq!(ndev, 1, "Expected 1 mock device");
+
+    let mut udev_buf = [0u8; 312];
+    stream1.read_exact(&mut udev_buf).await?;
+    let dev = protocol::UsbipUsbDevice::from_bytes(&udev_buf);
+    assert_eq!(dev.id_vendor, 0x1d6b);
+    assert_eq!(dev.id_product, 0x0104);
+
+    for _ in 0..dev.b_num_interfaces {
+        let mut intf_buf = [0u8; 4];
+        stream1.read_exact(&mut intf_buf).await?;
+    }
+    drop(stream1);
+
+    // 2. Perform OP_REQ_IMPORT
+    let mut stream2 = TcpStream::connect(format!("127.0.0.1:{}", local_port)).await?;
+    let mut import_req = Vec::new();
+    import_req.extend_from_slice(&[
+        0x01, 0x11, // version
+        0x80, 0x03, // OP_REQ_IMPORT
+        0x00, 0x00, 0x00, 0x00, // status
+    ]);
+    import_req.extend_from_slice(&protocol::pad_string(busid, 32));
+    stream2.write_all(&import_req).await?;
+    stream2.flush().await?;
+
+    let mut import_header = [0u8; 8];
+    stream2.read_exact(&mut import_header).await?;
+    assert_eq!(&import_header[0..2], &[0x01, 0x11]);
+    assert_eq!(&import_header[2..4], &[0x00, 0x03]); // OP_REP_IMPORT
+    let import_status = u32::from_be_bytes([
+        import_header[4],
+        import_header[5],
+        import_header[6],
+        import_header[7],
+    ]);
+    assert_eq!(import_status, 0);
+
+    let mut udev_buf = [0u8; 312];
+    stream2.read_exact(&mut udev_buf).await?;
+    let dev = protocol::UsbipUsbDevice::from_bytes(&udev_buf);
+    assert_eq!(dev.id_vendor, 0x1d6b);
+    assert_eq!(dev.id_product, 0x0104);
+
+    // 3. Send USBIP_CMD_SUBMIT to fetch the device descriptor
+    let seqnum = 42u32;
+    let devid = 0u32;
+    let direction = 1u32; // IN
+    let ep = 0u32;
+    let transfer_flags = 0u32;
+    let transfer_buffer_length = 18i32;
+    let setup = [0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 18, 0];
+
+    let mut cmd = Vec::new();
+    cmd.extend_from_slice(&0x0001u32.to_be_bytes()); // command: USBIP_CMD_SUBMIT (1)
+    cmd.extend_from_slice(&seqnum.to_be_bytes());
+    cmd.extend_from_slice(&devid.to_be_bytes());
+    cmd.extend_from_slice(&direction.to_be_bytes());
+    cmd.extend_from_slice(&ep.to_be_bytes());
+    cmd.extend_from_slice(&transfer_flags.to_be_bytes());
+    cmd.extend_from_slice(&transfer_buffer_length.to_be_bytes());
+    cmd.extend_from_slice(&0i32.to_be_bytes()); // start_frame
+    cmd.extend_from_slice(&0i32.to_be_bytes()); // number_of_packets
+    cmd.extend_from_slice(&0i32.to_be_bytes()); // interval
+    cmd.extend_from_slice(&setup);
+
+    stream2.write_all(&cmd).await?;
+    stream2.flush().await?;
+
+    // 4. Read USBIP_RET_SUBMIT response
+    let mut ret_header = [0u8; 48];
+    stream2.read_exact(&mut ret_header).await?;
+
+    let command = u32::from_be_bytes([ret_header[0], ret_header[1], ret_header[2], ret_header[3]]);
+    assert_eq!(command, 0x0003); // USBIP_RET_SUBMIT (3)
+    let resp_seqnum =
+        u32::from_be_bytes([ret_header[4], ret_header[5], ret_header[6], ret_header[7]]);
+    assert_eq!(resp_seqnum, seqnum);
+    let status = i32::from_be_bytes([
+        ret_header[20],
+        ret_header[21],
+        ret_header[22],
+        ret_header[23],
+    ]);
+    assert_eq!(status, 0);
+    let actual_len = i32::from_be_bytes([
+        ret_header[24],
+        ret_header[25],
+        ret_header[26],
+        ret_header[27],
+    ]);
+    assert_eq!(actual_len, 18);
+
+    let mut payload = vec![0u8; 18];
+    stream2.read_exact(&mut payload).await?;
+
+    // Assert that the returned packet descriptors match the mock device setup
+    assert_eq!(payload[8], 0x6b);
+    assert_eq!(payload[9], 0x1d);
+    assert_eq!(payload[10], 0x04);
+    assert_eq!(payload[11], 0x01);
+
+    drop(stream2);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -689,6 +1037,9 @@ mod tests {
             open_error: None,
             kernel_drivers: None,
             claimed_interfaces: None,
+            manufacturer: "Mock Manufacturer".to_string(),
+            product: "Mock Product".to_string(),
+            serial_number: "Mock Serial".to_string(),
         };
 
         assert_eq!(dev.bus_number(), 1);

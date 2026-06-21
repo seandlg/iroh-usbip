@@ -61,6 +61,10 @@ impl tokio::io::AsyncWrite for IrohStream {
 #[derive(Parser, Debug)]
 #[command(name = "iroh-usbip", version, about = "Secure P2P USB-over-IP")]
 struct Cli {
+    /// Enable Rust-internal mock mode for cross-platform E2E testing
+    #[arg(long, global = true)]
+    mock: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -99,10 +103,18 @@ enum Commands {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let is_mock = cli.mock
+        || std::env::var("IROH_USBIP_MOCK")
+            .map(|v| v == "1")
+            .unwrap_or(false);
 
     match cli.command {
         Commands::List => {
-            let registry = HostDeviceRegistry::new_physical()?;
+            let registry = if is_mock {
+                HostDeviceRegistry::new_mock()?
+            } else {
+                HostDeviceRegistry::new_physical()?
+            };
             let devices = registry.find_devices(&DeviceQuery::default())?;
             if devices.is_empty() {
                 println!("No USB devices found.");
@@ -119,7 +131,11 @@ async fn main() -> anyhow::Result<()> {
             bus_id,
             address,
         } => {
-            let registry = HostDeviceRegistry::new_physical()?;
+            let registry = if is_mock {
+                HostDeviceRegistry::new_mock()?
+            } else {
+                HostDeviceRegistry::new_physical()?
+            };
             let query =
                 DeviceQuery::from_cli_args(vid.as_deref(), pid.as_deref(), bus_id, address)?;
             let matched = registry.find_single_device(&query)?;
@@ -156,8 +172,8 @@ async fn main() -> anyhow::Result<()> {
             endpoint.close().await;
         }
         Commands::Attach { ticket: ticket_str } => {
-            let vhci = iroh_usbip::VhciController::new();
-            if !vhci.is_available() {
+            let vhci = iroh_usbip::VhciController::new_auto(is_mock);
+            if !is_mock && !vhci.is_available() {
                 anyhow::bail!(
                     "Linux VHCI kernel driver (vhci-hcd) is not available. Please load it with 'sudo modprobe vhci-hcd'."
                 );
@@ -261,57 +277,77 @@ async fn main() -> anyhow::Result<()> {
                 }
             });
 
-            // 4. Connect client TcpStream to local proxy
-            let mut tcp_client =
-                tokio::net::TcpStream::connect(format!("127.0.0.1:{}", local_port)).await?;
+            if is_mock {
+                // In mock mode, we call vhci.attach with a dummy sockfd to write the status file,
+                // and spawn the userspace MockKernelClient in the background.
+                vhci.attach(port, 9999, devid, speed)?;
+                println!(
+                    "Successfully attached virtual device (MOCK) to VHCI port {}!",
+                    port
+                );
 
-            // 5. Perform OP_REQ_IMPORT handshake on the client TcpStream
-            let mut import_req = Vec::new();
-            import_req.extend_from_slice(&[
-                0x01, 0x11, // version
-                0x80, 0x03, // OP_REQ_IMPORT
-                0x00, 0x00, 0x00, 0x00, // status
-            ]);
-            import_req.extend_from_slice(&iroh_usbip::protocol::pad_string(&busid_str, 32));
-            tcp_client.write_all(&import_req).await?;
-            tcp_client.flush().await?;
+                let busid_str_clone = busid_str.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    if let Err(e) =
+                        iroh_usbip::run_mock_kernel_client(local_port, &busid_str_clone).await
+                    {
+                        eprintln!("Mock kernel client error: {}", e);
+                    }
+                });
+            } else {
+                // 4. Connect client TcpStream to local proxy
+                let mut tcp_client =
+                    tokio::net::TcpStream::connect(format!("127.0.0.1:{}", local_port)).await?;
 
-            let mut import_header = [0u8; 8];
-            tcp_client.read_exact(&mut import_header).await?;
-            if import_header[0..2] != [0x01, 0x11] || import_header[2..4] != [0x00, 0x03] {
-                anyhow::bail!("Invalid handshake response from local proxy");
+                // 5. Perform OP_REQ_IMPORT handshake on the client TcpStream
+                let mut import_req = Vec::new();
+                import_req.extend_from_slice(&[
+                    0x01, 0x11, // version
+                    0x80, 0x03, // OP_REQ_IMPORT
+                    0x00, 0x00, 0x00, 0x00, // status
+                ]);
+                import_req.extend_from_slice(&iroh_usbip::protocol::pad_string(&busid_str, 32));
+                tcp_client.write_all(&import_req).await?;
+                tcp_client.flush().await?;
+
+                let mut import_header = [0u8; 8];
+                tcp_client.read_exact(&mut import_header).await?;
+                if import_header[0..2] != [0x01, 0x11] || import_header[2..4] != [0x00, 0x03] {
+                    anyhow::bail!("Invalid handshake response from local proxy");
+                }
+                let import_status = u32::from_be_bytes([
+                    import_header[4],
+                    import_header[5],
+                    import_header[6],
+                    import_header[7],
+                ]);
+                if import_status != 0 {
+                    anyhow::bail!("Import handshake failed with status: {}", import_status);
+                }
+
+                // Discard the returned 312 bytes from the stream
+                let mut discard_buf = [0u8; 312];
+                tcp_client.read_exact(&mut discard_buf).await?;
+
+                // 6. Convert TcpStream to RawFd using into_std & into_raw_fd
+                let std_stream = tcp_client.into_std()?;
+
+                #[cfg(unix)]
+                let sockfd = {
+                    use std::os::unix::io::IntoRawFd;
+                    std_stream.into_raw_fd()
+                };
+                #[cfg(not(unix))]
+                let sockfd = 0;
+
+                // 7. Attach to VHCI
+                vhci.attach(port, sockfd, devid, speed)?;
+                println!(
+                    "Successfully attached virtual device to VHCI port {}!",
+                    port
+                );
             }
-            let import_status = u32::from_be_bytes([
-                import_header[4],
-                import_header[5],
-                import_header[6],
-                import_header[7],
-            ]);
-            if import_status != 0 {
-                anyhow::bail!("Import handshake failed with status: {}", import_status);
-            }
-
-            // Discard the returned 312 bytes from the stream
-            let mut discard_buf = [0u8; 312];
-            tcp_client.read_exact(&mut discard_buf).await?;
-
-            // 6. Convert TcpStream to RawFd using into_std & into_raw_fd
-            let std_stream = tcp_client.into_std()?;
-
-            #[cfg(unix)]
-            let sockfd = {
-                use std::os::unix::io::IntoRawFd;
-                std_stream.into_raw_fd()
-            };
-            #[cfg(not(unix))]
-            let sockfd = 0;
-
-            // 7. Attach to VHCI
-            vhci.attach(port, sockfd, devid, speed)?;
-            println!(
-                "Successfully attached virtual device to VHCI port {}!",
-                port
-            );
             println!("Device is now connected. Press Ctrl+C to disconnect.");
 
             // 8. Capture shutdown signals (Ctrl+C / SIGINT / SIGTERM)

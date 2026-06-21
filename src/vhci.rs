@@ -11,6 +11,7 @@ pub type RawFd = i32;
 #[derive(Debug, Clone)]
 pub struct VhciController {
     sysfs_path: PathBuf,
+    mock: bool,
 }
 
 /// Find the active VHCI sysfs directory by checking common platform driver locations.
@@ -41,12 +42,42 @@ impl VhciController {
     pub fn new() -> Self {
         let path =
             find_vhci_dir().unwrap_or_else(|| PathBuf::from("/sys/devices/platform/vhci_hcd.0"));
-        Self { sysfs_path: path }
+        Self {
+            sysfs_path: path,
+            mock: false,
+        }
+    }
+
+    /// Create a new VHCI controller, optionally in mock mode.
+    pub fn new_auto(mock: bool) -> Self {
+        if mock {
+            let path = PathBuf::from("target/mock_sysfs");
+            if !path.exists() {
+                let _ = fs::create_dir_all(&path);
+            }
+            let status_path = path.join("status");
+            if !status_path.exists() {
+                let default_status = "\
+hub port sta spd dev sockfd local_busid
+hs 0000 004 000 00000000 000000 0-0
+";
+                let _ = fs::write(&status_path, default_status);
+            }
+            Self {
+                sysfs_path: path,
+                mock: true,
+            }
+        } else {
+            Self::new()
+        }
     }
 
     /// Create a VHCI controller pointing to a specific sysfs path (useful for testing/mocking).
     pub fn with_path(path: PathBuf) -> Self {
-        Self { sysfs_path: path }
+        Self {
+            sysfs_path: path,
+            mock: false,
+        }
     }
 
     /// Check if the VHCI kernel driver is available.
@@ -110,8 +141,20 @@ impl VhciController {
         let speed_code = crate::protocol::map_speed(speed);
         let cmd = format!("{} {} {} {}\n", port, sockfd, devid, speed_code);
         let attach_path = self.sysfs_path.join("attach");
-        fs::write(&attach_path, cmd)
+        fs::write(&attach_path, &cmd)
             .map_err(|e| anyhow::anyhow!("Failed to write to {}: {}", attach_path.display(), e))?;
+
+        if self.mock {
+            let dev_hex = format!("{:08x}", devid);
+            let sockfd_str = format!("{:06}", sockfd);
+            let status_content = format!(
+                "hub port sta spd dev sockfd local_busid\n\
+                hs {:04} 006 000 {} {} 1-2\n",
+                port, dev_hex, sockfd_str
+            );
+            let status_path = self.sysfs_path.join("status");
+            fs::write(&status_path, status_content)?;
+        }
         Ok(())
     }
 
@@ -119,8 +162,18 @@ impl VhciController {
     pub fn detach(&self, port: u32) -> anyhow::Result<()> {
         let cmd = format!("{}\n", port);
         let detach_path = self.sysfs_path.join("detach");
-        fs::write(&detach_path, cmd)
+        fs::write(&detach_path, &cmd)
             .map_err(|e| anyhow::anyhow!("Failed to write to {}: {}", detach_path.display(), e))?;
+
+        if self.mock {
+            let status_content = format!(
+                "hub port sta spd dev sockfd local_busid\n\
+                hs {:04} 004 000 00000000 000000 0-0\n",
+                port
+            );
+            let status_path = self.sysfs_path.join("status");
+            fs::write(&status_path, status_content)?;
+        }
         Ok(())
     }
 }

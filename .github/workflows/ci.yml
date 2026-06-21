@@ -26,15 +26,6 @@ jobs:
       - name: Run hermetic checks
         run: nix flake check
 
-      - name: Install host kernel modules and tools for E2E
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y linux-modules-extra-"$(uname -r)" usbutils
-
-      - name: Configure root Nix access
-        run: |
-          sudo ln -sf "$(which nix)" /usr/local/bin/nix
-
       - name: Run E2E Integration Tests
         run: |
-          sudo nix develop --command scripts/e2e.sh
+          nix develop --command bash -c "IROH_USBIP_MOCK=1 scripts/e2e.sh"
