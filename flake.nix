@@ -40,6 +40,8 @@
 
           buildInputs = [
             pkgs.libusb1
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            pkgs.libiconv
           ];
         };
 
@@ -64,7 +66,12 @@
             pkgs.libusb1
             pkgs.just
             pkgs.git-cliff
+            pkgs.gh
+            pkgs.python3
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.usbutils
           ];
+          IROH_USBIP_IN_DEV_SHELL = "1";
         };
 
         checks = {

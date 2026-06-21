@@ -28,4 +28,4 @@ jobs:
 
       - name: Run E2E Integration Tests
         run: |
-          nix develop --command bash -c "IROH_USBIP_MOCK=1 scripts/e2e.sh"
+          nix develop --command scripts/e2e.sh --mock

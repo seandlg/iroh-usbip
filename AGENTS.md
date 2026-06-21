@@ -27,8 +27,8 @@ Always use Conventional Commits for commit messages and link any issue currently
 ### Release Process
 
 Releases are fully automated and mistake-proof (Poka-Yoke). If you are asked to prepare or tag a release, you MUST use the task runner recipes in [justfile](file:///Users/river/Coding/iroh-usbip/justfile).
-- **Rule**: Never create or push git tags manually. Always run `just tag-release` from `main`, which automatically verifies CI success via `gh`.
-- **Rule**: Never run `prepare-release` on a dirty branch or directly on `main` without pulling. Always run `just prepare-release <version>` from a clean `main` branch.
+- **Rule**: Never create or push git tags manually. Always run `just tag-release` from `main` inside the Nix development shell (`nix develop`), which automatically verifies CI success via `gh`.
+- **Rule**: Never run `prepare-release` on a dirty branch or directly on `main` without pulling. Always run `just prepare-release <version>` from a clean `main` branch inside `nix develop`.
 - **Rule**: Follow SemVer strictly. Determine the version bump type (major, minor, patch) based on the Conventional Commits since the last release tag.
 
 

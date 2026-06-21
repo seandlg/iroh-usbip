@@ -1,6 +1,20 @@
 #!/bin/bash
 set -euo pipefail
 
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --mock)
+            export IROH_USBIP_MOCK=1
+            shift
+            ;;
+        *)
+            echo "Unknown argument: $1" >&2
+            exit 1
+            ;;
+    esac
+done
+
 # Check if running as root
 if [ "${IROH_USBIP_MOCK:-0}" != "1" ]; then
     if [ "$EUID" -ne 0 ]; then
@@ -149,7 +163,12 @@ fi
 
 # 4. Build iroh-usbip binary
 echo "Ensuring iroh-usbip is compiled..."
-cargo build
+if [ -n "${SUDO_USER:-}" ] && [ "$EUID" -eq 0 ]; then
+    # Run cargo build as the original user to avoid polluting the target directory with root-owned files
+    sudo -u "$SUDO_USER" env "PATH=$PATH" "HOME=$HOME" cargo build
+else
+    cargo build
+fi
 
 # 5. Share the gadget device
 echo "Sharing physical/mock USB device (VID: 1d6b, PID: 0104)..."

@@ -33,6 +33,12 @@ To keep this project highly maintainable and avoid documentation drift, we separ
 
 ## Quick Start
 
+Before running any commands, enter the reproducible development shell (which automatically loads all system dependencies like `libusb` and `pkg-config`):
+```bash
+nix develop
+```
+*(If Nix is not installed, verify you have installed the manual prerequisites listed above.)*
+
 ### 1. List physical USB devices on the Host
 Find the Vendor/Product IDs or Bus ID of the device you want to share:
 ```bash
@@ -64,22 +70,23 @@ Pressing `Ctrl+C` in either terminal will cleanly tear down the session, disconn
 This repository uses a combination of **Cargo** and **Nix** (specifically the **Lix** implementation with the **Crane** packaging library) to manage hermetic dependencies, build environments, and cached builds.
 
 ### 1. Nix & Cargo Interplay
-- **Reproducible Shell**: Run `nix develop` to enter a development shell containing all toolchains, libraries (`libusb1`, `pkg-config`), and tools like `just`.
-- **Cached Builds**: Crane compiles and caches Rust/Cargo dependencies separately from the project source to keep rebuilds fast.
-- **Task Runner (`just`)**: We standardize common development tasks using a `justfile`. These targets automatically execute commands wrapped in the Nix development environment (e.g., running `nix develop --command ...`).
+- **Reproducible Shell**: Run `nix develop` (or configure `direnv` with `use flake`) to enter a development shell containing all toolchains, libraries (`libusb1`, `pkg-config`), and tools like `just`, `gh`, and `git-cliff`.
+- **Idiomatic Cargo Flow**: Once inside `nix develop`, run standard Cargo commands directly. Spawning nested Nix subshells (like `nix develop --command cargo`) is avoided for local runs to keep feedback loops fast and IDE integrations (like Rust-Analyzer) working flawlessly.
+- **Task Runner (`just`)**: We reserve the `justfile` purely for complex, multi-step orchestrations or privilege transitions (e.g. running kernel integration tests and release pipelines).
 
 ### 2. Testing Scopes
 We separate testing into two distinct environments and privilege scopes:
 
 - **Hermetic Checks (Mock Unit & Integration Tests)**
   These tests run without any physical USB hardware or host-level kernel permissions. They use in-memory stream mocks and mock devices.
-  - Run clippy and format check:
+  - Run clippy and format checks:
     ```bash
-    just check
+    cargo fmt --all --check
+    cargo clippy --all-targets -- --deny warnings
     ```
   - Run all hermetic unit and mock integration tests:
     ```bash
-    just test
+    cargo test
     ```
   - Nix hermetic check (runs clippy, formatting, and unit tests inside a sandboxed build derivation):
     ```bash
@@ -92,19 +99,23 @@ We separate testing into two distinct environments and privilege scopes:
     ```bash
     just test-e2e
     ```
-  - This executes [scripts/e2e.sh](scripts/e2e.sh), which dynamically configures a virtual USB gadget, shares it via the host daemon, attaches it via the client daemon, and verifies the connection.
+    *Note:* The runner automatically compiles the binary as the normal user first, then runs `scripts/e2e.sh` using `sudo -E env PATH="$PATH"` to preserve the Nix-provided dependencies for the root shell, avoiding permission pollution in the build target directory.
+  - Run the E2E test in Mock Mode (does not require root or Linux VHCI):
+    ```bash
+    just test-e2e --mock
+    ```
 
 ### 3. Continuous Integration (CI)
 Our GitHub Actions pipeline (defined in `.github/workflows/ci.yml`) runs on every commit/PR:
 1. **Nix Setup**: Installs Nix/Lix and configures **Magic Nix Cache** for incremental store caching.
 2. **Hermetic Checks**: Executes `nix flake check` to verify formatting, clippy, and unit tests inside the sandbox.
-3. **E2E Testing**: Runs the unsandboxed E2E integration tests directly on the runner host using `sudo nix develop --command scripts/e2e.sh`.
+3. **E2E Testing**: Runs the unsandboxed mock E2E integration tests using `nix develop --command scripts/e2e.sh --mock`.
 
 ### 4. Releasing (Automation & SemVer)
-We use a double-gated, mistake-proof release workflow built around `cargo-dist` and `git-cliff`.
+We use a double-gated, mistake-proof release workflow built around `cargo-dist` and `git-cliff`. All release actions must be run inside `nix develop`.
 
 #### **How to release:**
-1. **Prepare Release** (from a clean `main` branch):
+1. **Prepare Release** (from a clean `main` branch inside `nix develop`):
    Determine the next version according to Semantic Versioning (SemVer) rules:
    - **Patch** (`0.1.x`): For bug fixes, refactorings, chores, and internal improvements.
    - **Minor** (`0.x.0`): For new features (e.g. support for a new command).
@@ -119,7 +130,7 @@ We use a double-gated, mistake-proof release workflow built around `cargo-dist` 
 2. **Submit PR & Merge**:
    Push the `release/v<version>` branch to GitHub, open a PR, and merge it to `main` once PR checks (including E2E checks) succeed.
    
-3. **Tag and Publish**:
+3. **Tag and Publish** (inside `nix develop`):
    Pull the merged commit locally on `main` and run:
    ```bash
    just tag-release

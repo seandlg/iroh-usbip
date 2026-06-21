@@ -1,25 +1,17 @@
 # iroh-usbip task runner
 #
-# Standardizes development tasks, wrapping commands with nix develop.
+# Standardizes complex and privileged operations.
 
-# Run clippy and format check inside the Nix environment
-check:
-    nix develop --command cargo fmt --all --check
-    nix develop --command cargo clippy --all-targets -- --deny warnings
+# Run the E2E integration test on Linux (requires sudo/root privileges unless in mock mode)
+test-e2e *args="":
+    cargo build
+    @if [[ "{{args}}" == *"--mock"* || "$IROH_USBIP_MOCK" == "1" ]]; then \
+        scripts/e2e.sh {{args}}; \
+    else \
+        sudo -E env "PATH=$PATH" scripts/e2e.sh {{args}}; \
+    fi
 
-# Build the binaries using Nix
-build:
-    nix build
-
-# Run the unit and mock integration tests inside the Nix environment
-test:
-    nix develop --command cargo test
-
-# Run the E2E integration test on Linux (requires sudo/root privileges)
-test-e2e:
-    sudo nix develop --command scripts/e2e.sh
-
-# Prepare a new release (run locally from main branch)
+# Prepare a new release (run locally from main branch inside nix develop)
 prepare-release version:
     @if [ "$(git branch --show-current)" != "main" ]; then echo "Error: prepare-release must be run on the main branch."; exit 1; fi
     @if [ -n "$(git status --porcelain)" ]; then echo "Error: git working directory is not clean."; exit 1; fi
@@ -35,8 +27,8 @@ prepare-release version:
      fi
     git checkout -b release/v{{version}}
     python3 -c "import re; p = open('Cargo.toml').read(); p = re.sub(r'(?m)^version = \".*?\"', 'version = \"{{version}}\"', p, 1); open('Cargo.toml', 'w').write(p)"
-    nix develop --command cargo check
-    nix run nixpkgs#git-cliff -- --tag v{{version}} --prepend CHANGELOG.md
+    cargo check
+    git-cliff --tag v{{version}} --prepend CHANGELOG.md
     git add Cargo.toml Cargo.lock CHANGELOG.md
     git commit -m "chore: release {{version}}"
     @echo ""
