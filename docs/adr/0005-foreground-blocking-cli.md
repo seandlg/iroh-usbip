@@ -1,0 +1,3 @@
+# Implement CLI Commands as Foreground Blocking Processes
+
+To ensure a simple, predictable user experience and simplify process management, we decided to implement the CLI commands `share` and `attach` as foreground blocking processes. Terminating the process (e.g., via `SIGINT` / Ctrl+C) will trigger a clean teardown sequence: the Host will release the physical USB device and shut down the Iroh node, and the Client will detach the virtual USB device from the OS kernel before exiting. Users requiring background execution can leverage standard system tools (like `systemd`, `tmux`, or shell backgrounding).

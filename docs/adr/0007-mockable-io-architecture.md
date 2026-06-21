@@ -1,0 +1,3 @@
+# Decouple USBIP State Machine from IO for Testability
+
+To enable automated testing on standard CI/CD runners that lack physical USB hardware or kernel VHCI driver access, we decided to separate the USBIP protocol parsing and state machine logic from the physical IO layers. We will define Rust traits for USB device interaction (mocked in tests, implemented via `rusb`/`libusb` in production) and network streams (mocked in-memory, implemented via Iroh QUIC streams in production). This allows us to run robust integration tests simulating the entire client-host handshake and URB transfer cycle in standard software-only environments.

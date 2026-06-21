@@ -1,0 +1,3 @@
+# Automatic Host Kernel Driver Detachment and Re-attachment
+
+To ensure a zero-configuration developer experience, we decided that the Host daemon will automatically detach active OS kernel drivers from the shared USB device's interfaces when a Client attaches it. Once the Client disconnects and the session ends, the Host daemon will attempt to re-attach the host kernel drivers to restore the device to its local state. On operating systems with driver models that restrict automatic detachment (such as Windows), the CLI will guide the user on how to associate the device with a compatible user-space driver (like WinUSB).
