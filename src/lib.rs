@@ -328,6 +328,8 @@ pub struct MockUsbDevice {
     pub transfer_handler: Option<MockTransferCallback>,
     pub dropped: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub open_error: Option<String>,
+    pub kernel_drivers: Option<Arc<std::sync::Mutex<std::collections::HashMap<u8, bool>>>>,
+    pub claimed_interfaces: Option<Arc<std::sync::Mutex<std::collections::HashSet<u8>>>>,
 }
 
 pub struct MockUsbDeviceHandle {
@@ -339,6 +341,8 @@ pub struct MockUsbDeviceHandle {
     pub serial_number: String,
     pub transfer_handler: Option<MockTransferCallback>,
     pub dropped: Option<Arc<std::sync::atomic::AtomicBool>>,
+    pub shared_kernel_drivers: Option<Arc<std::sync::Mutex<std::collections::HashMap<u8, bool>>>>,
+    pub shared_claimed_interfaces: Option<Arc<std::sync::Mutex<std::collections::HashSet<u8>>>>,
 }
 
 impl Drop for MockUsbDeviceHandle {
@@ -376,15 +380,25 @@ impl UsbDevice for MockUsbDevice {
         if let Some(ref err_msg) = self.open_error {
             return Err(anyhow::anyhow!("{}", err_msg));
         }
+        let mut kernel_drivers_active = std::collections::HashMap::new();
+        if let Some(ref shared) = self.kernel_drivers {
+            kernel_drivers_active = shared.lock().unwrap().clone();
+        }
+        let mut claimed_interfaces = std::collections::HashSet::new();
+        if let Some(ref shared) = self.claimed_interfaces {
+            claimed_interfaces = shared.lock().unwrap().clone();
+        }
         Ok(MockUsbDeviceHandle {
             active_config: 1,
-            claimed_interfaces: std::collections::HashSet::new(),
-            kernel_drivers_active: std::collections::HashMap::new(),
+            claimed_interfaces,
+            kernel_drivers_active,
             manufacturer: "Mock Manufacturer".to_string(),
             product: "Mock Product".to_string(),
             serial_number: "Mock Serial".to_string(),
             transfer_handler: self.transfer_handler.clone(),
             dropped: self.dropped.clone(),
+            shared_kernel_drivers: self.kernel_drivers.clone(),
+            shared_claimed_interfaces: self.claimed_interfaces.clone(),
         })
     }
 }
@@ -401,11 +415,17 @@ impl UsbDeviceHandle for MockUsbDeviceHandle {
 
     fn claim_interface(&mut self, interface: u8) -> anyhow::Result<()> {
         self.claimed_interfaces.insert(interface);
+        if let Some(ref shared) = self.shared_claimed_interfaces {
+            shared.lock().unwrap().insert(interface);
+        }
         Ok(())
     }
 
     fn release_interface(&mut self, interface: u8) -> anyhow::Result<()> {
         self.claimed_interfaces.remove(&interface);
+        if let Some(ref shared) = self.shared_claimed_interfaces {
+            shared.lock().unwrap().remove(&interface);
+        }
         Ok(())
     }
 
@@ -415,11 +435,17 @@ impl UsbDeviceHandle for MockUsbDeviceHandle {
 
     fn detach_kernel_driver(&mut self, interface: u8) -> anyhow::Result<()> {
         self.kernel_drivers_active.insert(interface, false);
+        if let Some(ref shared) = self.shared_kernel_drivers {
+            shared.lock().unwrap().insert(interface, false);
+        }
         Ok(())
     }
 
     fn attach_kernel_driver(&mut self, interface: u8) -> anyhow::Result<()> {
         self.kernel_drivers_active.insert(interface, true);
+        if let Some(ref shared) = self.shared_kernel_drivers {
+            shared.lock().unwrap().insert(interface, true);
+        }
         Ok(())
     }
 
@@ -543,6 +569,8 @@ mod tests {
             transfer_handler: None,
             dropped: None,
             open_error: None,
+            kernel_drivers: None,
+            claimed_interfaces: None,
         };
 
         assert_eq!(dev.bus_number(), 1);

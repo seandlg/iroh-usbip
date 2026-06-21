@@ -133,7 +133,7 @@ where
             }
 
             if let Some(dev) = found_device {
-                let mut handle = match dev.open() {
+                let mut inner_handle = match dev.open() {
                     Ok(h) => h,
                     Err(err) => {
                         let status = if err.to_string().contains("busy") {
@@ -162,6 +162,27 @@ where
                     remote_wakeup: false,
                     interfaces: vec![],
                 });
+
+                // Detach active host kernel drivers and claim interfaces
+                let mut detached_interfaces = Vec::new();
+                let mut claimed_interfaces = Vec::new();
+                for interface in &config.interfaces {
+                    let iface_num = interface.interface_number;
+                    if let Ok(true) = inner_handle.kernel_driver_active(iface_num) {
+                        if let Ok(_) = inner_handle.detach_kernel_driver(iface_num) {
+                            detached_interfaces.push(iface_num);
+                        }
+                    }
+                    if let Ok(_) = inner_handle.claim_interface(iface_num) {
+                        claimed_interfaces.push(iface_num);
+                    }
+                }
+
+                let mut handle = DriverGuard {
+                    handle: &mut inner_handle,
+                    detached_interfaces,
+                    claimed_interfaces,
+                };
 
                 let busnum = dev.bus_number();
                 let addr = dev.address();
@@ -408,4 +429,38 @@ where
     }
 
     Ok(())
+}
+
+struct DriverGuard<'a, H: crate::UsbDeviceHandle> {
+    handle: &'a mut H,
+    detached_interfaces: Vec<u8>,
+    claimed_interfaces: Vec<u8>,
+}
+
+impl<'a, H: crate::UsbDeviceHandle> std::ops::Deref for DriverGuard<'a, H> {
+    type Target = H;
+    fn deref(&self) -> &Self::Target {
+        self.handle
+    }
+}
+
+impl<'a, H: crate::UsbDeviceHandle> std::ops::DerefMut for DriverGuard<'a, H> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.handle
+    }
+}
+
+impl<'a, H: crate::UsbDeviceHandle> Drop for DriverGuard<'a, H> {
+    fn drop(&mut self) {
+        for &iface in &self.claimed_interfaces {
+            if let Err(e) = self.handle.release_interface(iface) {
+                eprintln!("Warning: Failed to release interface {}: {}", iface, e);
+            }
+        }
+        for &iface in &self.detached_interfaces {
+            if let Err(e) = self.handle.attach_kernel_driver(iface) {
+                eprintln!("Warning: Failed to re-attach kernel driver to interface {}: {}", iface, e);
+            }
+        }
+    }
 }

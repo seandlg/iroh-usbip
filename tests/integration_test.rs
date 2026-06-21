@@ -39,6 +39,8 @@ async fn test_op_req_devlist() -> anyhow::Result<()> {
         transfer_handler: None,
         dropped: None,
         open_error: None,
+        kernel_drivers: None,
+        claimed_interfaces: None,
     });
 
     // 2. Create in-memory duplex stream
@@ -131,6 +133,8 @@ async fn test_op_req_import() -> anyhow::Result<()> {
         transfer_handler: None,
         dropped: None,
         open_error: None,
+        kernel_drivers: None,
+        claimed_interfaces: None,
     });
 
     // 2. Create in-memory duplex stream
@@ -224,6 +228,8 @@ async fn test_urb_transfer() -> anyhow::Result<()> {
         transfer_handler: Some(callback),
         dropped: None,
         open_error: None,
+        kernel_drivers: None,
+        claimed_interfaces: None,
     });
 
     // 2. Create duplex stream
@@ -332,6 +338,8 @@ async fn test_urb_unlink() -> anyhow::Result<()> {
         transfer_handler: None,
         dropped: None,
         open_error: None,
+        kernel_drivers: None,
+        claimed_interfaces: None,
     });
 
     // 2. Create duplex stream
@@ -428,6 +436,8 @@ async fn test_disconnection_teardown() -> anyhow::Result<()> {
         transfer_handler: None,
         dropped: Some(dropped_flag.clone()),
         open_error: None,
+        kernel_drivers: None,
+        claimed_interfaces: None,
     });
 
     // 2. Create duplex stream
@@ -502,6 +512,8 @@ async fn test_op_req_import_device_busy() -> anyhow::Result<()> {
         transfer_handler: None,
         dropped: None,
         open_error: Some("device is busy".to_string()),
+        kernel_drivers: None,
+        claimed_interfaces: None,
     });
 
     // 2. Create in-memory duplex stream
@@ -574,6 +586,8 @@ async fn test_op_req_import_device_not_available() -> anyhow::Result<()> {
         transfer_handler: None,
         dropped: None,
         open_error: Some("general permission/hardware error".to_string()),
+        kernel_drivers: None,
+        claimed_interfaces: None,
     });
 
     // 2. Create in-memory duplex stream
@@ -657,6 +671,8 @@ async fn test_isochronous_transfer_dummy_handling() -> anyhow::Result<()> {
         transfer_handler: Some(callback),
         dropped: None,
         open_error: None,
+        kernel_drivers: None,
+        claimed_interfaces: None,
     });
 
     // 2. Create duplex stream
@@ -788,6 +804,133 @@ async fn test_isochronous_transfer_dummy_handling() -> anyhow::Result<()> {
     // Drop connection to let host finish
     drop(client);
     let _ = host_handle.await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_driver_detachment_lifecycle() -> anyhow::Result<()> {
+    // 1. Setup shared state to monitor mock device handle interactions
+    let kernel_drivers = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let claimed_interfaces = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+
+    // Suppose our device configuration has interface 0 and interface 1
+    let desc = UsbDeviceDescriptor {
+        vendor_id: 0x1234,
+        product_id: 0x5678,
+        device_class: 0x00,
+        device_subclass: 0x00,
+        device_protocol: 0x00,
+        max_packet_size_0: 64,
+        num_configurations: 1,
+        usb_version: (2, 0),
+        device_version: (1, 0),
+        manufacturer_string_index: None,
+        product_string_index: None,
+        serial_number_string_index: None,
+    };
+
+    use iroh_usbip::{UsbInterfaceDescriptor, UsbInterfaceSettingDescriptor};
+    let config = UsbConfigDescriptor {
+        num_interfaces: 2,
+        configuration_value: 1,
+        max_power: 500,
+        self_powered: true,
+        remote_wakeup: false,
+        interfaces: vec![
+            UsbInterfaceDescriptor {
+                interface_number: 0,
+                settings: vec![UsbInterfaceSettingDescriptor {
+                    setting_number: 0,
+                    class_code: 0,
+                    sub_class_code: 0,
+                    protocol_code: 0,
+                    endpoints: vec![],
+                }],
+            },
+            UsbInterfaceDescriptor {
+                interface_number: 1,
+                settings: vec![UsbInterfaceSettingDescriptor {
+                    setting_number: 0,
+                    class_code: 0,
+                    sub_class_code: 0,
+                    protocol_code: 0,
+                    endpoints: vec![],
+                }],
+            },
+        ],
+    };
+
+    // Pre-populate active kernel drivers for both interfaces
+    kernel_drivers.lock().unwrap().insert(0, true);
+    kernel_drivers.lock().unwrap().insert(1, true);
+
+    let dev = Arc::new(MockUsbDevice {
+        bus_num: 1,
+        dev_addr: 2,
+        dev_speed: UsbSpeed::High,
+        descriptor: desc,
+        config_descriptor: config,
+        transfer_handler: None,
+        dropped: None,
+        open_error: None,
+        kernel_drivers: Some(kernel_drivers.clone()),
+        claimed_interfaces: Some(claimed_interfaces.clone()),
+    });
+
+    // 2. Create in-memory duplex stream
+    let (client_stream, host_stream) = tokio::io::duplex(1024);
+
+    // 3. Spawn host session handler
+    let host_handle = tokio::spawn(async move {
+        run_usbip_session(host_stream, vec![dev]).await
+    });
+
+    // 4. Send OP_REQ_IMPORT with correct busid "1-2"
+    let mut client = client_stream;
+    let mut req = Vec::new();
+    req.extend_from_slice(&[
+        0x01, 0x11, // version: 0x0111
+        0x80, 0x03, // code: OP_REQ_IMPORT (0x8003)
+        0x00, 0x00, 0x00, 0x00, // status: 0
+    ]);
+    let busid_bytes = iroh_usbip::protocol::pad_string("1-2", 32);
+    req.extend_from_slice(&busid_bytes);
+    client.write_all(&req).await?;
+
+    // 5. Read response from host (header + udev)
+    let mut header = [0u8; 8];
+    client.read_exact(&mut header).await?;
+    assert_eq!(&header[4..8], &[0x00, 0x00, 0x00, 0x00]); // success
+
+    let mut udev_buf = [0u8; 312];
+    client.read_exact(&mut udev_buf).await?;
+
+    // 6. Assert that during client connection, kernel drivers are detached, and interfaces are claimed
+    {
+        let kd = kernel_drivers.lock().unwrap();
+        assert_eq!(kd.get(&0), Some(&false)); // Interface 0 detached
+        assert_eq!(kd.get(&1), Some(&false)); // Interface 1 detached
+
+        let ci = claimed_interfaces.lock().unwrap();
+        assert!(ci.contains(&0)); // Interface 0 claimed
+        assert!(ci.contains(&1)); // Interface 1 claimed
+    }
+
+    // 7. Disconnect the client
+    drop(client);
+    host_handle.await??;
+
+    // 8. Assert that after host teardown, interfaces are released and kernel drivers are re-attached
+    {
+        let kd = kernel_drivers.lock().unwrap();
+        assert_eq!(kd.get(&0), Some(&true)); // Interface 0 re-attached
+        assert_eq!(kd.get(&1), Some(&true)); // Interface 1 re-attached
+
+        let ci = claimed_interfaces.lock().unwrap();
+        assert!(!ci.contains(&0)); // Interface 0 released
+        assert!(!ci.contains(&1)); // Interface 1 released
+    }
+
     Ok(())
 }
 

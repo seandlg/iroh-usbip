@@ -1,5 +1,56 @@
 use clap::{Parser, Subcommand};
 use iroh_usbip::{list_physical_devices, UsbDevice, UsbDeviceHandle};
+use std::sync::Arc;
+use iroh::{Endpoint, endpoint::presets};
+use iroh_tickets::{Ticket, endpoint::EndpointTicket};
+
+struct IrohStream {
+    recv: iroh::endpoint::RecvStream,
+    send: iroh::endpoint::SendStream,
+}
+
+impl tokio::io::AsyncRead for IrohStream {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.recv).poll_read(cx, buf)
+    }
+}
+
+impl tokio::io::AsyncWrite for IrohStream {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match std::pin::Pin::new(&mut self.send).poll_write(cx, buf) {
+            std::task::Poll::Ready(res) => std::task::Poll::Ready(res.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match std::pin::Pin::new(&mut self.send).poll_flush(cx) {
+            std::task::Poll::Ready(res) => std::task::Poll::Ready(res.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match std::pin::Pin::new(&mut self.send).poll_shutdown(cx) {
+            std::task::Poll::Ready(res) => std::task::Poll::Ready(res.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "iroh-usbip", version, about = "Secure P2P USB-over-IP")]
@@ -106,11 +157,108 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Share { vid, pid, bus_id, address } => {
-            println!("Placeholder: Sharing USB device...");
-            println!("Filter options: VID={:?}, PID={:?}, Bus={:?}, Address={:?}", vid, pid, bus_id, address);
+            let devices = list_physical_devices()?;
+            let mut matched = None;
+            for dev in devices {
+                let bus = dev.bus_number();
+                let addr = dev.address();
+                let desc = match dev.device_descriptor() {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+
+                // Match VID
+                if let Some(ref vid_str) = vid {
+                    let val = u16::from_str_radix(vid_str.trim_start_matches("0x"), 16)?;
+                    if desc.vendor_id != val {
+                        continue;
+                    }
+                }
+                // Match PID
+                if let Some(ref pid_str) = pid {
+                    let val = u16::from_str_radix(pid_str.trim_start_matches("0x"), 16)?;
+                    if desc.product_id != val {
+                        continue;
+                    }
+                }
+                // Match Bus ID
+                if let Some(b) = bus_id {
+                    if bus != b {
+                        continue;
+                    }
+                }
+                // Match Address
+                if let Some(a) = address {
+                    if addr != a {
+                        continue;
+                    }
+                }
+
+                matched = Some(dev);
+                break;
+            }
+
+            let dev = match matched {
+                Some(d) => d,
+                None => {
+                    anyhow::bail!("No matching USB device found.");
+                }
+            };
+
+            println!("Sharing USB device Bus {:03} Address {:03}...", dev.bus_number(), dev.address());
+
+            // Initialize Iroh Node
+            let endpoint = Endpoint::builder(presets::N0)
+                .alpns(vec![b"iroh-usbip".to_vec()])
+                .bind()
+                .await?;
+
+            let addr = endpoint.addr();
+            let ticket = EndpointTicket::new(addr.clone());
+            println!("Connection ticket:\n{}", ticket.encode_string());
+
+            println!("Waiting for client to connect...");
+            if let Some(incoming) = endpoint.accept().await {
+                let conn = incoming.await?;
+                println!("Client connected! Establishing stream...");
+                let (send, recv) = conn.accept_bi().await?;
+                let stream = IrohStream { send, recv };
+                println!("Session started. Redirecting USB traffic.");
+                if let Err(e) = iroh_usbip::engine::run_usbip_session(stream, vec![Arc::new(dev)]).await {
+                    eprintln!("Session error: {}", e);
+                }
+                println!("Session ended. Detaching client.");
+            }
+
+            endpoint.close().await;
         }
-        Commands::Attach { ticket } => {
-            println!("Placeholder: Attaching remote USB device using ticket: {}", ticket);
+        Commands::Attach { ticket: ticket_str } => {
+            let ticket = EndpointTicket::decode_string(&ticket_str)?;
+            let endpoint = Endpoint::bind(presets::N0).await?;
+
+            let local_addr = "127.0.0.1:3240";
+            let listener = tokio::net::TcpListener::bind(local_addr).await?;
+            println!("Local proxy listening on tcp://{}...", local_addr);
+            println!("Connecting to remote shared device via Iroh P2P...");
+
+            let conn: iroh::endpoint::Connection = endpoint.connect(ticket.endpoint_addr().clone(), b"iroh-usbip").await?;
+            println!("Connected to Host! Tunnel established. Press Ctrl+C to disconnect.");
+
+            // Accept local TCP connections
+            while let Ok((mut tcp_stream, peer_addr)) = listener.accept().await {
+                println!("Local client connected: {}", peer_addr);
+                let (send, recv) = conn.open_bi().await?;
+                let mut iroh_stream = IrohStream { send, recv };
+
+                tokio::spawn(async move {
+                    if let Err(e) = tokio::io::copy_bidirectional(&mut tcp_stream, &mut iroh_stream).await {
+                        eprintln!("Proxy forward error: {}", e);
+                    }
+                    println!("Local client disconnected: {}", peer_addr);
+                });
+            }
+
+            endpoint.close().await;
         }
     }
 
