@@ -38,6 +38,7 @@ async fn test_op_req_devlist() -> anyhow::Result<()> {
         config_descriptor: config,
         transfer_handler: None,
         dropped: None,
+        open_error: None,
     });
 
     // 2. Create in-memory duplex stream
@@ -129,6 +130,7 @@ async fn test_op_req_import() -> anyhow::Result<()> {
         config_descriptor: config,
         transfer_handler: None,
         dropped: None,
+        open_error: None,
     });
 
     // 2. Create in-memory duplex stream
@@ -221,6 +223,7 @@ async fn test_urb_transfer() -> anyhow::Result<()> {
         config_descriptor: config,
         transfer_handler: Some(callback),
         dropped: None,
+        open_error: None,
     });
 
     // 2. Create duplex stream
@@ -328,6 +331,7 @@ async fn test_urb_unlink() -> anyhow::Result<()> {
         config_descriptor: config,
         transfer_handler: None,
         dropped: None,
+        open_error: None,
     });
 
     // 2. Create duplex stream
@@ -423,6 +427,7 @@ async fn test_disconnection_teardown() -> anyhow::Result<()> {
         config_descriptor: config,
         transfer_handler: None,
         dropped: Some(dropped_flag.clone()),
+        open_error: None,
     });
 
     // 2. Create duplex stream
@@ -462,5 +467,150 @@ async fn test_disconnection_teardown() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_op_req_import_device_busy() -> anyhow::Result<()> {
+    // 1. Setup mock device that fails open with "device is busy"
+    let desc = UsbDeviceDescriptor {
+        vendor_id: 0x1234,
+        product_id: 0x5678,
+        device_class: 0x00,
+        device_subclass: 0x00,
+        device_protocol: 0x00,
+        max_packet_size_0: 64,
+        num_configurations: 1,
+        usb_version: (2, 0),
+        device_version: (1, 0),
+        manufacturer_string_index: Some(1),
+        product_string_index: Some(2),
+        serial_number_string_index: Some(3),
+    };
+    let config = UsbConfigDescriptor {
+        num_interfaces: 1,
+        configuration_value: 1,
+        max_power: 500,
+        self_powered: true,
+        remote_wakeup: false,
+        interfaces: vec![],
+    };
+    let dev = Arc::new(MockUsbDevice {
+        bus_num: 1,
+        dev_addr: 2,
+        dev_speed: UsbSpeed::High,
+        descriptor: desc,
+        config_descriptor: config,
+        transfer_handler: None,
+        dropped: None,
+        open_error: Some("device is busy".to_string()),
+    });
+
+    // 2. Create in-memory duplex stream
+    let (client_stream, host_stream) = tokio::io::duplex(1024);
+
+    // 3. Spawn host session handler
+    let host_handle = tokio::spawn(async move {
+        run_usbip_session(host_stream, vec![dev]).await
+    });
+
+    // 4. Send OP_REQ_IMPORT with correct busid "1-2"
+    let mut client = client_stream;
+    let mut req = Vec::new();
+    req.extend_from_slice(&[
+        0x01, 0x11, // version: 0x0111
+        0x80, 0x03, // code: OP_REQ_IMPORT (0x8003)
+        0x00, 0x00, 0x00, 0x00, // status: 0
+    ]);
+    let busid_bytes = iroh_usbip::protocol::pad_string("1-2", 32);
+    req.extend_from_slice(&busid_bytes);
+    client.write_all(&req).await?;
+
+    // 5. Read response from host
+    let mut header = [0u8; 8];
+    client.read_exact(&mut header).await?;
+    
+    // Check version
+    assert_eq!(&header[0..2], &[0x01, 0x11]);
+    // Check code (OP_REP_IMPORT = 0x0003)
+    assert_eq!(&header[2..4], &[0x00, 0x03]);
+    // Check status (ST_DEV_BUSY = 0x02)
+    assert_eq!(&header[4..8], &[0x00, 0x00, 0x00, 0x02]);
+
+    drop(client);
+    host_handle.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_op_req_import_device_not_available() -> anyhow::Result<()> {
+    // 1. Setup mock device that fails open with generic error
+    let desc = UsbDeviceDescriptor {
+        vendor_id: 0x1234,
+        product_id: 0x5678,
+        device_class: 0x00,
+        device_subclass: 0x00,
+        device_protocol: 0x00,
+        max_packet_size_0: 64,
+        num_configurations: 1,
+        usb_version: (2, 0),
+        device_version: (1, 0),
+        manufacturer_string_index: Some(1),
+        product_string_index: Some(2),
+        serial_number_string_index: Some(3),
+    };
+    let config = UsbConfigDescriptor {
+        num_interfaces: 1,
+        configuration_value: 1,
+        max_power: 500,
+        self_powered: true,
+        remote_wakeup: false,
+        interfaces: vec![],
+    };
+    let dev = Arc::new(MockUsbDevice {
+        bus_num: 1,
+        dev_addr: 2,
+        dev_speed: UsbSpeed::High,
+        descriptor: desc,
+        config_descriptor: config,
+        transfer_handler: None,
+        dropped: None,
+        open_error: Some("general permission/hardware error".to_string()),
+    });
+
+    // 2. Create in-memory duplex stream
+    let (client_stream, host_stream) = tokio::io::duplex(1024);
+
+    // 3. Spawn host session handler
+    let host_handle = tokio::spawn(async move {
+        run_usbip_session(host_stream, vec![dev]).await
+    });
+
+    // 4. Send OP_REQ_IMPORT with correct busid "1-2"
+    let mut client = client_stream;
+    let mut req = Vec::new();
+    req.extend_from_slice(&[
+        0x01, 0x11, // version: 0x0111
+        0x80, 0x03, // code: OP_REQ_IMPORT (0x8003)
+        0x00, 0x00, 0x00, 0x00, // status: 0
+    ]);
+    let busid_bytes = iroh_usbip::protocol::pad_string("1-2", 32);
+    req.extend_from_slice(&busid_bytes);
+    client.write_all(&req).await?;
+
+    // 5. Read response from host
+    let mut header = [0u8; 8];
+    client.read_exact(&mut header).await?;
+    
+    // Check version
+    assert_eq!(&header[0..2], &[0x01, 0x11]);
+    // Check code (OP_REP_IMPORT = 0x0003)
+    assert_eq!(&header[2..4], &[0x00, 0x03]);
+    // Check status (ST_NA = 0x01)
+    assert_eq!(&header[4..8], &[0x00, 0x00, 0x00, 0x01]);
+
+    drop(client);
+    host_handle.await??;
+    Ok(())
+}
+
 
 

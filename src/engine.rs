@@ -6,6 +6,7 @@ use crate::protocol::{
     USBIP_CMD_SUBMIT, USBIP_RET_SUBMIT, USBIP_CMD_UNLINK,
     USBIP_VERSION, pad_string, map_speed,
     UsbipUsbDevice, UsbipUsbInterface,
+    OpCommon, OpDevlistReply, OpImportRequest, ST_OK, ST_NA, ST_DEV_BUSY,
 };
 
 pub async fn run_usbip_session<S, D>(mut stream: S, devices: Vec<Arc<D>>) -> anyhow::Result<()>
@@ -15,27 +16,32 @@ where
 {
     // Read the 8-byte op_common header
     let mut header = [0u8; 8];
-    if let Err(_) = stream.read_exact(&mut header).await {
+    if stream.read_exact(&mut header).await.is_err() {
         // Stream closed or failed to read header
         return Ok(());
     }
 
-    let version = u16::from_be_bytes([header[0], header[1]]);
-    let code = u16::from_be_bytes([header[2], header[3]]);
-    let _status = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+    let common = OpCommon::from_bytes(header);
 
-    if version != USBIP_VERSION {
-        anyhow::bail!("Unsupported USBIP version: {:04x}", version);
+    if common.version != USBIP_VERSION {
+        anyhow::bail!("Unsupported USBIP version: {:04x}", common.version);
     }
 
-    match code {
+    match common.code {
         OP_REQ_DEVLIST => {
             // Respond with OP_REP_DEVLIST
             let mut response = Vec::new();
-            response.extend_from_slice(&USBIP_VERSION.to_be_bytes());
-            response.extend_from_slice(&OP_REP_DEVLIST.to_be_bytes());
-            response.extend_from_slice(&0u32.to_be_bytes());
-            response.extend_from_slice(&(devices.len() as u32).to_be_bytes());
+            let rep_header = OpCommon {
+                version: USBIP_VERSION,
+                code: OP_REP_DEVLIST,
+                status: ST_OK,
+            };
+            response.extend_from_slice(&rep_header.to_bytes());
+            
+            let rep_devlist = OpDevlistReply {
+                ndev: devices.len() as u32,
+            };
+            response.extend_from_slice(&rep_devlist.to_bytes());
 
             for dev in &devices {
                 let desc = dev.device_descriptor()?;
@@ -106,10 +112,11 @@ where
             stream.flush().await?;
         }
         OP_REQ_IMPORT => {
-            // Read 32 bytes of busid
+            // Read 32 bytes of busid (using OpImportRequest)
             let mut busid_buf = [0u8; 32];
             stream.read_exact(&mut busid_buf).await?;
-            let req_busid = std::str::from_utf8(&busid_buf)?
+            let import_req = OpImportRequest::from_bytes(busid_buf);
+            let req_busid = std::str::from_utf8(&import_req.busid)?
                 .trim_end_matches('\0')
                 .to_string();
 
@@ -124,7 +131,26 @@ where
             }
 
             if let Some(dev) = found_device {
-                let mut handle = dev.open()?;
+                let mut handle = match dev.open() {
+                    Ok(h) => h,
+                    Err(err) => {
+                        let status = if err.to_string().contains("busy") {
+                            ST_DEV_BUSY
+                        } else {
+                            ST_NA
+                        };
+                        let mut response = Vec::new();
+                        let rep_header = OpCommon {
+                            version: USBIP_VERSION,
+                            code: OP_REP_IMPORT,
+                            status,
+                        };
+                        response.extend_from_slice(&rep_header.to_bytes());
+                        stream.write_all(&response).await?;
+                        stream.flush().await?;
+                        return Ok(());
+                    }
+                };
                 let desc = dev.device_descriptor()?;
                 let config = dev.config_descriptor(0).unwrap_or_else(|_| crate::UsbConfigDescriptor {
                     num_interfaces: 0,
@@ -166,9 +192,12 @@ where
                 };
 
                 let mut response = Vec::new();
-                response.extend_from_slice(&USBIP_VERSION.to_be_bytes());
-                response.extend_from_slice(&OP_REP_IMPORT.to_be_bytes());
-                response.extend_from_slice(&0u32.to_be_bytes());
+                let rep_header = OpCommon {
+                    version: USBIP_VERSION,
+                    code: OP_REP_IMPORT,
+                    status: ST_OK,
+                };
+                response.extend_from_slice(&rep_header.to_bytes());
                 response.extend_from_slice(&udev.to_bytes());
 
                 stream.write_all(&response).await?;
@@ -329,15 +358,18 @@ where
             } else {
                 // Not found
                 let mut response = Vec::new();
-                response.extend_from_slice(&USBIP_VERSION.to_be_bytes());
-                response.extend_from_slice(&OP_REP_IMPORT.to_be_bytes());
-                response.extend_from_slice(&1u32.to_be_bytes()); // Status = 1 (error/not found)
+                let rep_header = OpCommon {
+                    version: USBIP_VERSION,
+                    code: OP_REP_IMPORT,
+                    status: ST_NA,
+                };
+                response.extend_from_slice(&rep_header.to_bytes());
                 stream.write_all(&response).await?;
                 stream.flush().await?;
             }
         }
         _ => {
-            anyhow::bail!("Unknown USBIP command code: {:04x}", code);
+            anyhow::bail!("Unknown USBIP command code: {:04x}", common.code);
         }
     }
 

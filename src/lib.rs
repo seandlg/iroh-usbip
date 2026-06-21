@@ -327,6 +327,7 @@ pub struct MockUsbDevice {
     pub config_descriptor: UsbConfigDescriptor,
     pub transfer_handler: Option<MockTransferCallback>,
     pub dropped: Option<Arc<std::sync::atomic::AtomicBool>>,
+    pub open_error: Option<String>,
 }
 
 pub struct MockUsbDeviceHandle {
@@ -372,6 +373,9 @@ impl UsbDevice for MockUsbDevice {
     }
 
     fn open(&self) -> anyhow::Result<Self::Handle> {
+        if let Some(ref err_msg) = self.open_error {
+            return Err(anyhow::anyhow!("{}", err_msg));
+        }
         Ok(MockUsbDeviceHandle {
             active_config: 1,
             claimed_interfaces: std::collections::HashSet::new(),
@@ -538,6 +542,7 @@ mod tests {
             config_descriptor: config,
             transfer_handler: None,
             dropped: None,
+            open_error: None,
         };
 
         assert_eq!(dev.bus_number(), 1);
