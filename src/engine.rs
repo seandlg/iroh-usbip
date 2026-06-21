@@ -1,127 +1,33 @@
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::{UsbDevice, UsbDeviceHandle};
 use crate::protocol::{
-    OP_REQ_DEVLIST, OP_REP_DEVLIST, OP_REQ_IMPORT, OP_REP_IMPORT,
-    USBIP_CMD_SUBMIT, USBIP_RET_SUBMIT, USBIP_CMD_UNLINK, USBIP_RET_UNLINK,
-    USBIP_VERSION, pad_string, map_speed,
-    UsbipUsbDevice, UsbipUsbInterface,
-    OpCommon, OpDevlistReply, OpImportRequest, ST_OK, ST_NA, ST_DEV_BUSY,
-    UsbipHeaderBasic, UsbipHeaderCmdSubmit, UsbipHeaderRetSubmit,
-    UsbipHeaderCmdUnlink, UsbipHeaderRetUnlink, UsbipIsoPacketDescriptor,
+    ST_OK, ST_NA, ST_DEV_BUSY, USBIP_RET_SUBMIT, USBIP_RET_UNLINK,
+    UsbipHeaderBasic, UsbipHeaderRetSubmit, UsbipHeaderRetUnlink,
+    UsbipRequest, UsbipResponse, UsbipStream,
 };
 
-pub async fn run_usbip_session<S, D>(mut stream: S, devices: Vec<Arc<D>>) -> anyhow::Result<()>
+pub async fn run_usbip_session<S, D>(stream: S, devices: Vec<Arc<D>>) -> anyhow::Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     D: UsbDevice + 'static,
 {
-    // Read the 8-byte op_common header
-    let mut header = [0u8; 8];
-    if stream.read_exact(&mut header).await.is_err() {
-        // Stream closed or failed to read header
-        return Ok(());
-    }
+    let mut ustream = UsbipStream::new(stream);
 
-    let common = OpCommon::from_bytes(header);
+    let req = match ustream.read_handshake_request().await? {
+        Some(req) => req,
+        None => return Ok(()),
+    };
 
-    if common.version != USBIP_VERSION {
-        anyhow::bail!("Unsupported USBIP version: {:04x}", common.version);
-    }
-
-    match common.code {
-        OP_REQ_DEVLIST => {
-            // Respond with OP_REP_DEVLIST
-            let mut response = Vec::new();
-            let rep_header = OpCommon {
-                version: USBIP_VERSION,
-                code: OP_REP_DEVLIST,
-                status: ST_OK,
-            };
-            response.extend_from_slice(&rep_header.to_bytes());
-            
-            let rep_devlist = OpDevlistReply {
-                ndev: devices.len() as u32,
-            };
-            response.extend_from_slice(&rep_devlist.to_bytes());
-
+    match req {
+        UsbipRequest::Devlist => {
+            let mut details = Vec::new();
             for dev in &devices {
-                let desc = dev.device_descriptor()?;
-                let config = dev.config_descriptor(0).unwrap_or_else(|_| crate::UsbConfigDescriptor {
-                    num_interfaces: 0,
-                    configuration_value: 1,
-                    max_power: 500,
-                    self_powered: true,
-                    remote_wakeup: false,
-                    interfaces: vec![],
-                });
-
-                let busnum = dev.bus_number();
-                let addr = dev.address();
-
-                let path_str = format!("/sys/devices/mock/usb{}/{}-{}", busnum, busnum, addr);
-                let path_bytes = pad_string(&path_str, 256);
-                let mut path = [0u8; 256];
-                path.copy_from_slice(&path_bytes);
-
-                let busid_str = format!("{}-{}", busnum, addr);
-                let busid_bytes = pad_string(&busid_str, 32);
-                let mut busid = [0u8; 32];
-                busid.copy_from_slice(&busid_bytes);
-
-                let udev = UsbipUsbDevice {
-                    path,
-                    busid,
-                    busnum: busnum as u32,
-                    devnum: addr as u32,
-                    speed: map_speed(dev.speed()),
-                    id_vendor: desc.vendor_id,
-                    id_product: desc.product_id,
-                    bcd_device: ((desc.device_version.0 as u16) << 8) | (desc.device_version.1 as u16),
-                    b_device_class: desc.device_class,
-                    b_device_subclass: desc.device_subclass,
-                    b_device_protocol: desc.device_protocol,
-                    b_configuration_value: config.configuration_value,
-                    b_num_configurations: desc.num_configurations,
-                    b_num_interfaces: config.num_interfaces,
-                };
-
-                response.extend_from_slice(&udev.to_bytes());
-
-                for interface in &config.interfaces {
-                    let setting = interface.settings.first().cloned().unwrap_or_else(|| {
-                        crate::UsbInterfaceSettingDescriptor {
-                            setting_number: 0,
-                            class_code: 0,
-                            sub_class_code: 0,
-                            protocol_code: 0,
-                            endpoints: vec![],
-                        }
-                    });
-
-                    let uinf = UsbipUsbInterface {
-                        b_interface_class: setting.class_code,
-                        b_interface_subclass: setting.sub_class_code,
-                        b_interface_protocol: setting.protocol_code,
-                        padding: 0,
-                    };
-
-                    response.extend_from_slice(&uinf.to_bytes());
-                }
+                let detail = crate::protocol::UsbipDeviceDetail::new(dev.as_ref())?;
+                details.push(detail);
             }
-
-            stream.write_all(&response).await?;
-            stream.flush().await?;
+            ustream.write_handshake_response(UsbipResponse::Devlist { devices: details }).await?;
         }
-        OP_REQ_IMPORT => {
-            // Read 32 bytes of busid (using OpImportRequest)
-            let mut busid_buf = [0u8; 32];
-            stream.read_exact(&mut busid_buf).await?;
-            let import_req = OpImportRequest::from_bytes(busid_buf);
-            let req_busid = std::str::from_utf8(&import_req.busid)?
-                .trim_end_matches('\0')
-                .to_string();
-
+        UsbipRequest::Import { busid: req_busid } => {
             // Find matching device
             let mut found_device = None;
             for dev in &devices {
@@ -141,19 +47,10 @@ where
                         } else {
                             ST_NA
                         };
-                        let mut response = Vec::new();
-                        let rep_header = OpCommon {
-                            version: USBIP_VERSION,
-                            code: OP_REP_IMPORT,
-                            status,
-                        };
-                        response.extend_from_slice(&rep_header.to_bytes());
-                        stream.write_all(&response).await?;
-                        stream.flush().await?;
+                        ustream.write_handshake_response(UsbipResponse::Import { status, device: None }).await?;
                         return Ok(());
                     }
                 };
-                let desc = dev.device_descriptor()?;
                 let config = dev.config_descriptor(0).unwrap_or_else(|_| crate::UsbConfigDescriptor {
                     num_interfaces: 0,
                     configuration_value: 1,
@@ -184,248 +81,24 @@ where
                     claimed_interfaces,
                 };
 
-                let busnum = dev.bus_number();
-                let addr = dev.address();
-
-                let path_str = format!("/sys/devices/mock/usb{}/{}-{}", busnum, busnum, addr);
-                let path_bytes = pad_string(&path_str, 256);
-                let mut path = [0u8; 256];
-                path.copy_from_slice(&path_bytes);
-
-                let busid_str = format!("{}-{}", busnum, addr);
-                let busid_bytes = pad_string(&busid_str, 32);
-                let mut busid = [0u8; 32];
-                busid.copy_from_slice(&busid_bytes);
-
-                let udev = UsbipUsbDevice {
-                    path,
-                    busid,
-                    busnum: busnum as u32,
-                    devnum: addr as u32,
-                    speed: map_speed(dev.speed()),
-                    id_vendor: desc.vendor_id,
-                    id_product: desc.product_id,
-                    bcd_device: ((desc.device_version.0 as u16) << 8) | (desc.device_version.1 as u16),
-                    b_device_class: desc.device_class,
-                    b_device_subclass: desc.device_subclass,
-                    b_device_protocol: desc.device_protocol,
-                    b_configuration_value: config.configuration_value,
-                    b_num_configurations: desc.num_configurations,
-                    b_num_interfaces: config.num_interfaces,
-                };
-
-                let mut response = Vec::new();
-                let rep_header = OpCommon {
-                    version: USBIP_VERSION,
-                    code: OP_REP_IMPORT,
+                let detail = crate::protocol::UsbipDeviceDetail::new(dev.as_ref())?;
+                ustream.write_handshake_response(UsbipResponse::Import {
                     status: ST_OK,
-                };
-                response.extend_from_slice(&rep_header.to_bytes());
-                response.extend_from_slice(&udev.to_bytes());
-
-                stream.write_all(&response).await?;
-                stream.flush().await?;
+                    device: Some(detail),
+                }).await?;
 
                 // Transition to Transfer Phase Loop
-                loop {
-                    let mut cmd_buf = [0u8; 48];
-                    if let Err(_) = stream.read_exact(&mut cmd_buf).await {
-                        // Connection closed by client
-                        break;
-                    }
-
-                    let mut basic_bytes = [0u8; 20];
-                    basic_bytes.copy_from_slice(&cmd_buf[0..20]);
-                    let basic = UsbipHeaderBasic::from_bytes(basic_bytes);
-
-                    let mut payload_bytes = [0u8; 28];
-                    payload_bytes.copy_from_slice(&cmd_buf[20..48]);
-
-                    match basic.command {
-                        USBIP_CMD_SUBMIT => {
-                            let cmd_submit = UsbipHeaderCmdSubmit::from_bytes(payload_bytes);
-
-                            // Read OUT data if direction is OUT (0)
-                            let mut data = vec![0u8; cmd_submit.transfer_buffer_length.max(0) as usize];
-                            if basic.direction == 0 && cmd_submit.transfer_buffer_length > 0 {
-                                stream.read_exact(&mut data).await?;
-                            }
-
-                            // Read isochronous packet descriptors if number_of_packets > 0
-                            let mut iso_descriptors = Vec::new();
-                            if cmd_submit.number_of_packets > 0 {
-                                let total_desc_bytes = (cmd_submit.number_of_packets as usize) * 16;
-                                let mut desc_buf = vec![0u8; total_desc_bytes];
-                                stream.read_exact(&mut desc_buf).await?;
-                                for chunk in desc_buf.chunks_exact(16) {
-                                    let mut arr = [0u8; 16];
-                                    arr.copy_from_slice(chunk);
-                                    iso_descriptors.push(UsbipIsoPacketDescriptor::from_bytes(arr));
-                                }
-                            }
-
-                            let timeout = std::time::Duration::from_secs(5);
-                            let transfer_res: (i32, Vec<u8>) = if basic.ep == 0 {
-                                let bm_request_type = cmd_submit.setup[0];
-                                let b_request = cmd_submit.setup[1];
-                                let w_value = u16::from_le_bytes([cmd_submit.setup[2], cmd_submit.setup[3]]);
-                                let w_index = u16::from_le_bytes([cmd_submit.setup[4], cmd_submit.setup[5]]);
-
-                                if basic.direction == 1 {
-                                    // Control Read
-                                    let mut buf = vec![0u8; cmd_submit.transfer_buffer_length.max(0) as usize];
-                                    match handle.read_control(bm_request_type, b_request, w_value, w_index, &mut buf, timeout) {
-                                        Ok(len) => {
-                                            buf.truncate(len);
-                                            (0, buf)
-                                        }
-                                        Err(_) => (-32, vec![]), // EPIPE (-32) on stall/error
-                                    }
-                                } else {
-                                    // Control Write
-                                    match handle.write_control(bm_request_type, b_request, w_value, w_index, &data, timeout) {
-                                        Ok(_) => (0, vec![]),
-                                        Err(_) => (-32, vec![]),
-                                    }
-                                }
-                            } else {
-                                let ep_addr = (basic.ep as u8) | if basic.direction == 1 { 0x80 } else { 0x00 };
-
-                                let mut is_interrupt = false;
-                                if let Ok(cfg) = dev.config_descriptor(0) {
-                                    'outer: for interface in cfg.interfaces {
-                                        for setting in interface.settings {
-                                            for endpoint in setting.endpoints {
-                                                if endpoint.address == ep_addr {
-                                                    if endpoint.transfer_type == crate::UsbTransferType::Interrupt {
-                                                        is_interrupt = true;
-                                                    }
-                                                    break 'outer;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                if is_interrupt {
-                                    if basic.direction == 1 {
-                                        let mut buf = vec![0u8; cmd_submit.transfer_buffer_length.max(0) as usize];
-                                        match handle.read_interrupt(ep_addr, &mut buf, timeout) {
-                                            Ok(len) => {
-                                                buf.truncate(len);
-                                                (0, buf)
-                                            }
-                                            Err(_) => (-32, vec![]),
-                                        }
-                                    } else {
-                                        match handle.write_interrupt(ep_addr, &data, timeout) {
-                                            Ok(_) => (0, vec![]),
-                                            Err(_) => (-32, vec![]),
-                                        }
-                                    }
-                                } else {
-                                    // Default to Bulk
-                                    if basic.direction == 1 {
-                                        let mut buf = vec![0u8; cmd_submit.transfer_buffer_length.max(0) as usize];
-                                        match handle.read_bulk(ep_addr, &mut buf, timeout) {
-                                            Ok(len) => {
-                                                buf.truncate(len);
-                                                (0, buf)
-                                            }
-                                            Err(_) => (-32, vec![]),
-                                        }
-                                    } else {
-                                        match handle.write_bulk(ep_addr, &data, timeout) {
-                                            Ok(_) => (0, vec![]),
-                                            Err(_) => (-32, vec![]),
-                                        }
-                                    }
-                                }
-                            };
-
-                            let (status, resp_data) = transfer_res;
-
-                            let resp_basic = UsbipHeaderBasic {
-                                command: USBIP_RET_SUBMIT,
-                                seqnum: basic.seqnum,
-                                devid: basic.devid,
-                                direction: basic.direction,
-                                ep: basic.ep,
-                            };
-                            let resp_submit = UsbipHeaderRetSubmit {
-                                status,
-                                actual_length: resp_data.len() as i32,
-                                start_frame: 0,
-                                number_of_packets: cmd_submit.number_of_packets,
-                                error_count: 0,
-                            };
-                            let mut resp = [0u8; 48];
-                            resp[0..20].copy_from_slice(&resp_basic.to_bytes());
-                            resp[20..48].copy_from_slice(&resp_submit.to_bytes());
-
-                            stream.write_all(&resp).await?;
-                            if basic.direction == 1 {
-                                stream.write_all(&resp_data).await?;
-                            }
-
-                            // Write back dummy descriptors if number_of_packets > 0 and IN transfer
-                            if basic.direction == 1 && cmd_submit.number_of_packets > 0 {
-                                let mut dummy_desc_bytes = Vec::with_capacity(iso_descriptors.len() * 16);
-                                for desc in &iso_descriptors {
-                                    let dummy_desc = UsbipIsoPacketDescriptor {
-                                        offset: desc.offset,
-                                        length: desc.length,
-                                        actual_length: desc.length,
-                                        status: 0,
-                                    };
-                                    dummy_desc_bytes.extend_from_slice(&dummy_desc.to_bytes());
-                                }
-                                stream.write_all(&dummy_desc_bytes).await?;
-                            }
-
-                            stream.flush().await?;
-                        }
-                        USBIP_CMD_UNLINK => {
-                            let _cmd_unlink = UsbipHeaderCmdUnlink::from_bytes(payload_bytes);
-
-                            let resp_basic = UsbipHeaderBasic {
-                                command: USBIP_RET_UNLINK,
-                                seqnum: basic.seqnum,
-                                devid: basic.devid,
-                                direction: basic.direction,
-                                ep: basic.ep,
-                            };
-                            let resp_unlink = UsbipHeaderRetUnlink {
-                                status: -104, // -ECONNRESET
-                            };
-                            let mut resp = [0u8; 48];
-                            resp[0..20].copy_from_slice(&resp_basic.to_bytes());
-                            resp[20..48].copy_from_slice(&resp_unlink.to_bytes());
-
-                            stream.write_all(&resp).await?;
-                            stream.flush().await?;
-                        }
-                        _ => {
-                            anyhow::bail!("Unknown transfer command: {:08x}", basic.command);
-                        }
-                    }
+                let mut runner = TransferRunner::new(dev.as_ref(), &mut *handle);
+                while let Some(transfer_req) = ustream.read_transfer_request().await? {
+                    let resp = runner.execute(transfer_req)?;
+                    ustream.write_transfer_response(resp).await?;
                 }
             } else {
                 // Not found
-                let mut response = Vec::new();
-                let rep_header = OpCommon {
-                    version: USBIP_VERSION,
-                    code: OP_REP_IMPORT,
-                    status: ST_NA,
-                };
-                response.extend_from_slice(&rep_header.to_bytes());
-                stream.write_all(&response).await?;
-                stream.flush().await?;
+                ustream.write_handshake_response(UsbipResponse::Import { status: ST_NA, device: None }).await?;
             }
         }
-        _ => {
-            anyhow::bail!("Unknown USBIP command code: {:04x}", common.code);
-        }
+        _ => anyhow::bail!("Invalid handshake phase request"),
     }
 
     Ok(())
@@ -464,3 +137,233 @@ impl<'a, H: crate::UsbDeviceHandle> Drop for DriverGuard<'a, H> {
         }
     }
 }
+
+pub struct TransferRunner<'a, D: UsbDevice, H: UsbDeviceHandle> {
+    device: &'a D,
+    handle: &'a mut H,
+}
+
+impl<'a, D: UsbDevice, H: UsbDeviceHandle> TransferRunner<'a, D, H> {
+    pub fn new(device: &'a D, handle: &'a mut H) -> Self {
+        Self { device, handle }
+    }
+
+    pub fn execute(&mut self, req: UsbipRequest) -> anyhow::Result<UsbipResponse> {
+        match req {
+            UsbipRequest::Submit {
+                basic,
+                submit: cmd_submit,
+                data,
+                iso_descriptors,
+            } => {
+                let timeout = std::time::Duration::from_secs(5);
+                let transfer_res: (i32, Vec<u8>) = if basic.ep == 0 {
+                    let bm_request_type = cmd_submit.setup[0];
+                    let b_request = cmd_submit.setup[1];
+                    let w_value = u16::from_le_bytes([cmd_submit.setup[2], cmd_submit.setup[3]]);
+                    let w_index = u16::from_le_bytes([cmd_submit.setup[4], cmd_submit.setup[5]]);
+
+                    if basic.direction == 1 {
+                        // Control Read
+                        let mut buf = vec![0u8; cmd_submit.transfer_buffer_length.max(0) as usize];
+                        match self.handle.read_control(bm_request_type, b_request, w_value, w_index, &mut buf, timeout) {
+                            Ok(len) => {
+                                buf.truncate(len);
+                                (0, buf)
+                            }
+                            Err(_) => (-32, vec![]), // EPIPE (-32) on stall/error
+                        }
+                    } else {
+                        // Control Write
+                        match self.handle.write_control(bm_request_type, b_request, w_value, w_index, &data, timeout) {
+                            Ok(_) => (0, vec![]),
+                            Err(_) => (-32, vec![]),
+                        }
+                    }
+                } else {
+                    let ep_addr = (basic.ep as u8) | if basic.direction == 1 { 0x80 } else { 0x00 };
+
+                    let mut is_interrupt = false;
+                    if let Ok(cfg) = self.device.config_descriptor(0) {
+                        'outer: for interface in cfg.interfaces {
+                            for setting in interface.settings {
+                                for endpoint in setting.endpoints {
+                                    if endpoint.address == ep_addr {
+                                        if endpoint.transfer_type == crate::UsbTransferType::Interrupt {
+                                            is_interrupt = true;
+                                        }
+                                        break 'outer;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if is_interrupt {
+                        if basic.direction == 1 {
+                            let mut buf = vec![0u8; cmd_submit.transfer_buffer_length.max(0) as usize];
+                            match self.handle.read_interrupt(ep_addr, &mut buf, timeout) {
+                                Ok(len) => {
+                                    buf.truncate(len);
+                                    (0, buf)
+                                }
+                                Err(_) => (-32, vec![]),
+                            }
+                        } else {
+                            match self.handle.write_interrupt(ep_addr, &data, timeout) {
+                                Ok(_) => (0, vec![]),
+                                Err(_) => (-32, vec![]),
+                            }
+                        }
+                    } else {
+                        // Default to Bulk
+                        if basic.direction == 1 {
+                            let mut buf = vec![0u8; cmd_submit.transfer_buffer_length.max(0) as usize];
+                            match self.handle.read_bulk(ep_addr, &mut buf, timeout) {
+                                Ok(len) => {
+                                    buf.truncate(len);
+                                    (0, buf)
+                                }
+                                Err(_) => (-32, vec![]),
+                            }
+                        } else {
+                            match self.handle.write_bulk(ep_addr, &data, timeout) {
+                                Ok(_) => (0, vec![]),
+                                Err(_) => (-32, vec![]),
+                            }
+                        }
+                    }
+                };
+
+                let (status, resp_data) = transfer_res;
+
+                let resp_submit = UsbipHeaderRetSubmit {
+                    status,
+                    actual_length: resp_data.len() as i32,
+                    start_frame: 0,
+                    number_of_packets: cmd_submit.number_of_packets,
+                    error_count: 0,
+                };
+
+                Ok(UsbipResponse::Submit {
+                    basic: UsbipHeaderBasic {
+                        command: USBIP_RET_SUBMIT,
+                        seqnum: basic.seqnum,
+                        devid: basic.devid,
+                        direction: basic.direction,
+                        ep: basic.ep,
+                    },
+                    submit: resp_submit,
+                    data: resp_data,
+                    iso_descriptors,
+                })
+            }
+            UsbipRequest::Unlink { basic, unlink: _ } => {
+                let resp_basic = UsbipHeaderBasic {
+                    command: USBIP_RET_UNLINK,
+                    seqnum: basic.seqnum,
+                    devid: basic.devid,
+                    direction: basic.direction,
+                    ep: basic.ep,
+                };
+                let resp_unlink = UsbipHeaderRetUnlink {
+                    status: -104, // -ECONNRESET
+                };
+                Ok(UsbipResponse::Unlink {
+                    basic: resp_basic,
+                    unlink: resp_unlink,
+                })
+            }
+            _ => anyhow::bail!("Invalid transfer phase request: {:?}", req),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{MockUsbDevice, UsbDeviceDescriptor, UsbConfigDescriptor, UsbSpeed};
+    use crate::protocol::{UsbipHeaderBasic, UsbipHeaderCmdSubmit, USBIP_CMD_SUBMIT};
+    use std::sync::Arc;
+
+    #[test]
+    fn test_transfer_runner_control_read() {
+        let desc = UsbDeviceDescriptor {
+            vendor_id: 0x1234,
+            product_id: 0x5678,
+            device_class: 0,
+            device_subclass: 0,
+            device_protocol: 0,
+            max_packet_size_0: 64,
+            num_configurations: 1,
+            usb_version: (2, 0),
+            device_version: (1, 0),
+            manufacturer_string_index: Some(1),
+            product_string_index: Some(2),
+            serial_number_string_index: Some(3),
+        };
+        let config = UsbConfigDescriptor {
+            num_interfaces: 1,
+            configuration_value: 1,
+            max_power: 500,
+            self_powered: true,
+            remote_wakeup: false,
+            interfaces: vec![],
+        };
+
+        // Create mock device with a callback
+        let callback = Arc::new(|action: String, _data: Vec<u8>| {
+            if action == "control_read:128:6:256:0" {
+                Ok(vec![0xAA, 0xBB])
+            } else {
+                Ok(vec![])
+            }
+        });
+
+        let dev = MockUsbDevice {
+            bus_num: 1,
+            dev_addr: 2,
+            dev_speed: UsbSpeed::High,
+            descriptor: desc,
+            config_descriptor: config,
+            transfer_handler: Some(callback),
+            dropped: None,
+            open_error: None,
+            kernel_drivers: None,
+            claimed_interfaces: None,
+        };
+
+        let mut handle = dev.open().unwrap();
+        let mut runner = TransferRunner::new(&dev, &mut handle);
+
+        let req = UsbipRequest::Submit {
+            basic: UsbipHeaderBasic {
+                command: USBIP_CMD_SUBMIT,
+                seqnum: 1,
+                devid: 2,
+                direction: 1, // IN
+                ep: 0,        // control endpoint
+            },
+            submit: UsbipHeaderCmdSubmit {
+                transfer_flags: 0,
+                transfer_buffer_length: 2,
+                start_frame: 0,
+                number_of_packets: 0,
+                interval: 0,
+                setup: [128, 6, 0, 1, 0, 0, 2, 0], // setup request
+            },
+            data: vec![],
+            iso_descriptors: vec![],
+        };
+
+        let resp = runner.execute(req).unwrap();
+        if let UsbipResponse::Submit { basic: _, submit, data, iso_descriptors: _ } = resp {
+            assert_eq!(submit.status, 0);
+            assert_eq!(submit.actual_length, 2);
+            assert_eq!(data, vec![0xAA, 0xBB]);
+        } else {
+            panic!("Expected UsbipResponse::Submit");
+        }
+    }
+}
+
