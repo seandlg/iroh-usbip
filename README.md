@@ -6,69 +6,17 @@ Secure P2P USB-over-IP. Tunnel physical USB devices to remote clients over encry
 
 ![iroh-usbip demo](docs/assets/demo.gif)
 
-## Documentation Index
+## Installation
 
-To keep this project highly maintainable and avoid documentation drift, we separate system concerns:
-
-- **Domain Model & Vocabulary**: See [CONTEXT.md](CONTEXT.md) for terminology (*Host*, *Client*, *Physical Device*, *Virtual Device*, *Bridge*).
-- **Architectural Decision Records (ADRs)**: See [docs/adr/](docs/adr/) for design histories, including driver detachment and user-space limitations.
-- **Product Requirements**: See [docs/prd.md](docs/prd.md) for scoping, goals, and non-goals.
-- **Agent and Triage Guidelines**: See [AGENTS.md](AGENTS.md) and [docs/agents/](docs/agents/) for workspace labels and CLI issue tracker patterns.
+Install the latest pre-compiled binary via our installer script:
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/seandlg/iroh-usbip/releases/latest/download/iroh-usbip-installer.sh | sh
+```
+*(For advanced options like Nix, Windows support, or building from source, see [Advanced Installation](#advanced-installation) below).*
 
 ---
 
-## I. User Guide
-
-This guide is for end-users who want to install the `iroh-usbip` tool and share or access USB devices.
-
-### Prerequisites
-
-#### Host Machine (Sharing physical devices)
-*   **Linux/macOS**: No manual dependencies are needed. The system library `libusb-1.0` is statically compiled into the release. 
-    *(Note: Sharing physical devices requires root/sudo privileges on both Linux and macOS to claim the USB interface and detach any active OS drivers).*
-*   **Windows (Untested / Experimental)**: Supported but untested. Windows restricts direct user-space USB access, so you must associate the physical USB device you want to share with the `WinUSB` driver using [Zadig](https://zadig.akeo.ie/) before sharing.
-
-#### Client Machine (Mounting remote devices)
-*   **Linux**: Requires the `vhci-hcd` kernel module loaded. Load it with:
-    ```bash
-    sudo modprobe vhci-hcd
-    ```
-*   **Windows (Untested / Experimental)**: Requires a VHCI driver interface. Install the virtual controller driver from [usbip-win](https://github.com/cezanne/usbip-win).
-*   **macOS**: Client support (mounting remote devices on macOS) is currently out of scope.
-
-### Installation
-
-#### Option 1: Quick Install (Recommended)
-Install the latest pre-compiled binary via our installer scripts:
-*   **macOS/Linux**:
-    ```bash
-    curl --proto '=https' --tlsv1.2 -LsSf https://github.com/seandlg/iroh-usbip/releases/latest/download/iroh-usbip-installer.sh | sh
-    ```
-*   **Windows**:
-    ```powershell
-    irm https://github.com/seandlg/iroh-usbip/releases/latest/download/iroh-usbip-installer.ps1 | iex
-    ```
-
-#### Option 2: Nix (Flake-enabled)
-If you run Nix, you can install or run `iroh-usbip` directly:
-*   Run without installing:
-    ```bash
-    nix run github:seandlg/iroh-usbip -- <args>
-    ```
-*   Install to your Nix profile:
-    ```bash
-    nix profile install github:seandlg/iroh-usbip
-    ```
-
-#### Option 3: From Source (Cargo Fallback)
-To compile from source, you only need the standard Rust toolchain (2024 edition) and a C compiler (like `gcc`, `clang`, or MSVC build tools). The underlying `libusb-1.0` library is vendored and compiled statically automatically.
-
-Install the binary directly from our GitHub repository:
-```bash
-cargo install --git https://github.com/seandlg/iroh-usbip
-```
-
-### Usage Workflow
+## Usage
 
 `iroh-usbip` facilitates secure peer-to-peer sharing of USB devices directly over the internet without VPNs or port forwarding.
 
@@ -85,98 +33,89 @@ sequenceDiagram
     Note over Host,Client: Real-time USB packets tunneled securely
 ```
 
-#### Roles
-*   **Host**: The machine physically connected to the USB device. Running the `share` command detaches active OS drivers and serves the device.
-*   **Client**: The machine that wants to mount the device virtually. Running `attach` maps the remote device to a virtual controller port.
-*   **How Sharing Works**: Peer-to-peer (P2P) connections are established using the Iroh network. The traffic is end-to-end encrypted and automatically traverses firewalls and NATs using QUIC.
+### Steps
+1.  **List USB devices on the Host** to find the Vendor ID (VID) / Product ID (PID) of the device you want to share:
+    ```bash
+    sudo iroh-usbip list
+    ```
+2.  **Share the device on the Host** to start the P2P node and generate a connection ticket:
+    ```bash
+    sudo iroh-usbip share --vid <VID> --pid <PID>
+    ```
+3.  **Attach the device on the Client** using the generated ticket:
+    *(Note: Linux clients require the VHCI driver loaded. Run `sudo modprobe vhci-hcd` before attaching).*
+    ```bash
+    sudo iroh-usbip attach <TICKET_STRING>
+    ```
+4.  **Verify the attachment on the Client** by listing active USB devices:
+    ```bash
+    lsusb
+    ```
+
+*Note: Pressing `Ctrl+C` in either terminal cleanly terminates the P2P session, detaches the virtual device from the Client, and restores the original drivers on the Host.*
 
 ---
 
-#### Concrete Walkthrough Example (Sharing a QEMU Tablet device)
+## Advanced Installation
 
-Watch a live terminal recording of this walkthrough:
-![iroh-usbip demo](docs/assets/demo.gif)
+### Windows Support (Untested / Experimental)
+Windows support is experimental. Because of Windows driver models, manual driver setup is required:
+*   **To Share (Host)**: Windows restricts direct user-space USB access. You must associate the physical USB device you want to share with the `WinUSB` driver using [Zadig](https://zadig.akeo.ie/) before sharing.
+*   **To Attach (Client)**: Requires a VHCI driver interface. Install the virtual controller driver from [usbip-win](https://github.com/cezanne/usbip-win).
+*   **Installer**: Run the Windows installer script in PowerShell:
+    ```powershell
+    irm https://github.com/seandlg/iroh-usbip/releases/latest/download/iroh-usbip-installer.ps1 | iex
+    ```
 
-##### 1. List physical USB devices on the Host
-Find the Vendor/Product IDs (VID/PID) of the device you want to share:
+### Nix (Flake-enabled)
+If you run Nix, you can install or run `iroh-usbip` directly:
+*   Run without installing:
+    ```bash
+    nix run github:seandlg/iroh-usbip -- <args>
+    ```
+*   Install to your Nix profile:
+    ```bash
+    nix profile install github:seandlg/iroh-usbip
+    ```
+
+### From Source (Cargo Fallback)
+To compile from source, you only need the standard Rust toolchain (2024 edition) and a C compiler (like `gcc`, `clang`, or MSVC build tools). The underlying `libusb-1.0` library is vendored and compiled statically automatically.
+
+Install the binary directly from our GitHub repository:
 ```bash
-iroh-usbip list
+cargo install --git https://github.com/seandlg/iroh-usbip
 ```
-*Output:*
-```text
-Bus 001 Device 001: ID 1d6b:0001 Linux Foundation 1.1 root hub
-Bus 001 Device 002: ID 0627:0001 Adomax Technology Co., Ltd QEMU Tablet
-```
-*(Note: If no devices show up or you get permission warnings, try running with `sudo iroh-usbip list`)*
-
-##### 2. Share the device on the Host
-Start the sharing server on the Host using the device's Vendor ID. This claims the device (detaching active kernel drivers) and prints a connection ticket:
-```bash
-sudo iroh-usbip share --vid 0627
-```
-*Output:*
-```text
-Sharing USB device Bus 001 Device 002: ID 0627:0001 QEMU QEMU USB Tablet...
-Connection ticket:
-endpointaaoj5z7ylpwmizgikhk352mave64budppioi36mxbc2vdze4yztwsbabaafhd4abv6oqeaiamruagmvptubacafzca6jnl45aiaqckqdiaaaacqcus4mk57772y547oexibq
-Waiting for client to connect...
-```
-
-##### 3. Attach the device on the Client
-On the Client machine, use the ticket to attach the device:
-```bash
-sudo iroh-usbip attach endpointaaoj5z7ylpwmizgikhk352mave64budppioi36mxbc2vdze4yztwsbabaafhd4abv6oqeaiamruagmvptubacafzca6jnl45aiaqckqdiaaaacqcus4mk57772y547oexibq
-```
-*Output:*
-```text
-Connecting to remote shared device via Iroh P2P...
-Connected to Host! Querying shared devices...
-Found remote device: 1-2 (speed: Full)
-Attaching to local virtual port: 0
-Successfully attached virtual device to VHCI port 0!
-Device is now connected. Press Ctrl+C to disconnect.
-```
-
-##### 4. Verify Attachment on the Client
-Run `lsusb` in another terminal on the Client. You will see the virtual device mounted on a new virtual bus:
-```bash
-lsusb
-```
-*Output:*
-```text
-Bus 001 Device 001: ID 1d6b:0001 Linux Foundation 1.1 root hub
-Bus 001 Device 002: ID 0627:0001 Adomax Technology Co., Ltd QEMU Tablet
-Bus 002 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
-Bus 002 Device 002: ID 0627:0001 Adomax Technology Co., Ltd QEMU Tablet
-Bus 003 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
-```
-
-Pressing `Ctrl+C` in either terminal cleanly terminates the P2P session, detaches the virtual device from the Client, and restores original drivers on the Host.
 
 ---
 
-## II. Contributor Guide
+## Development
 
-This guide is for developers contributing to `iroh-usbip`.
+This section is for developers contributing to `iroh-usbip`.
+
+### Architecture & Reference
+To keep this project highly maintainable and avoid documentation drift, we separate system concerns:
+
+*   **Domain Model & Vocabulary**: See [CONTEXT.md](CONTEXT.md) for terminology (*Host*, *Client*, *Physical Device*, *Virtual Device*, *Bridge*).
+*   **Architectural Decision Records (ADRs)**: See [docs/adr/](docs/adr/) for design histories, including driver detachment and user-space limitations.
+*   **Product Requirements**: See [docs/prd.md](docs/prd.md) for scoping, goals, and non-goals.
+*   **Agent and Triage Guidelines**: See [AGENTS.md](AGENTS.md) and [docs/agents/](docs/agents/) for workspace labels and CLI issue tracker patterns.
 
 ### Development Prerequisites
-
 To ensure a reproducible environment, this project uses **Nix** (specifically the **Lix** implementation with the **Crane** packaging library) to manage hermetic dependencies, build environments, and cached builds.
 
 *   **Nix**: Install Nix and enable Flakes.
 *   **direnv (Optional)**: Automatically load the Nix environment when you enter the directory.
 
 If you are not using Nix, you must manually install:
-- Rust toolchain (2024 edition)
-- `libusb-1.0` dev library
-- `pkg-config`
-- `just` (task runner)
-- `git-cliff` (changelog generator)
-- `gh` (GitHub CLI)
-- `python3`
+*   Rust toolchain (2024 edition)
+*   `libusb-1.0` dev library
+*   `pkg-config`
+*   `just` (task runner)
+*   `git-cliff` (changelog generator)
+*   `gh` (GitHub CLI)
+*   `python3`
 
 ### Entering the Development Environment
-
 Enter the reproducible shell containing all toolchains, libraries (`libusb1`, `pkg-config`), and helper CLIs:
 ```bash
 nix develop
@@ -184,17 +123,14 @@ nix develop
 *(Alternatively, configure `direnv` with `use flake` to load the environment automatically)*
 
 ### Nix & Cargo Interplay Guidelines
-
 1.  **Idiomatic Cargo Flow**: Once inside `nix develop`, run standard Cargo commands directly (e.g. `cargo build`, `cargo test`). Spawning nested Nix subshells (like `nix develop --command cargo`) is avoided for local runs to keep feedback loops fast and IDE integrations (like Rust-Analyzer) working flawlessly.
 2.  **Task Runner (`just`)**: We reserve the `justfile` purely for complex, multi-step orchestrations or privilege transitions (e.g. running kernel integration tests and release pipelines).
 
 ### Running / Testing Local Builds with Root Privileges
-
 To test your local code modifications, you will compile the binary in user-space and run it as root. 
 Because the `root` user does not inherit the Nix shell's environment paths, running standard `sudo target/debug/iroh-usbip` will fail due to missing dependencies. 
 
 Use the `sudo -E env PATH="$PATH"` prefix to preserve the development environment:
-
 *   **Share local build**:
     ```bash
     sudo -E env PATH="$PATH" ./target/debug/iroh-usbip share --vid <VID> --pid <PID>
@@ -205,7 +141,6 @@ Use the `sudo -E env PATH="$PATH"` prefix to preserve the development environmen
     ```
 
 ### Testing Scopes
-
 We separate testing into two distinct environments and privilege scopes:
 
 #### 1. Hermetic Checks (Mock Unit & Integration Tests)
@@ -213,6 +148,8 @@ These tests run without any physical USB hardware or host-level kernel permissio
 *   Run clippy and format checks:
     ```bash
     cargo fmt --all --check
+    ```
+    ```bash
     cargo clippy --all-targets -- --deny warnings
     ```
 *   Run all hermetic unit and mock integration tests:
@@ -243,11 +180,9 @@ Our GitHub Actions pipeline (defined in `.github/workflows/ci.yml`) runs on ever
 3.  **E2E Testing**: Runs the unsandboxed mock E2E integration tests using `nix develop --command scripts/e2e.sh --mock`.
 
 ### Release Process (Automation & SemVer)
-
 We use a double-gated, mistake-proof release workflow built around `cargo-dist` and `git-cliff`. All release actions must be run inside `nix develop`.
 
 #### **How to release:**
-
 1.  **Prepare Release** (from a clean `main` branch inside `nix develop`):
     Determine the next version according to Semantic Versioning (SemVer) rules:
     *   **Patch** (`0.1.x`): For bug fixes, refactorings, chores, and internal improvements.
