@@ -2,11 +2,18 @@
 name = "iroh-usbip"
 version = "0.1.0"
 edition = "2024"
+repository = "https://github.com/seandlg/iroh-usbip"
+
 
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.4", features = ["derive"] }
-rusb = "0.9"
+rusb = { version = "0.9", features = ["vendored"] }
 tokio = { version = "1.35", features = ["full"] }
 iroh = "1.0.0"
 iroh-tickets = "1.0.0"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

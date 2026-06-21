@@ -100,3 +100,30 @@ Our GitHub Actions pipeline (defined in `.github/workflows/ci.yml`) runs on ever
 2. **Hermetic Checks**: Executes `nix flake check` to verify formatting, clippy, and unit tests inside the sandbox.
 3. **E2E Testing**: Runs the unsandboxed E2E integration tests directly on the runner host using `sudo nix develop --command scripts/e2e.sh`.
 
+### 4. Releasing (Automation & SemVer)
+We use a double-gated, mistake-proof release workflow built around `cargo-dist` and `git-cliff`.
+
+#### **How to release:**
+1. **Prepare Release** (from a clean `main` branch):
+   Determine the next version according to Semantic Versioning (SemVer) rules:
+   - **Patch** (`0.1.x`): For bug fixes, refactorings, chores, and internal improvements.
+   - **Minor** (`0.x.0`): For new features (e.g. support for a new command).
+   - **Major** (`x.0.0`): For breaking changes.
+   
+   Run the task runner recipe to prepare the release:
+   ```bash
+   just prepare-release <version>
+   ```
+   *Gate 1 (Poka-Yoke):* This will fail if the latest commit on `main` has not passed GitHub Actions CI. If green, it creates a `release/v<version>` branch, bumps the version in `Cargo.toml`, updates `CHANGELOG.md` via `git-cliff`, and commits the changes.
+   
+2. **Submit PR & Merge**:
+   Push the `release/v<version>` branch to GitHub, open a PR, and merge it to `main` once PR checks (including E2E checks) succeed.
+   
+3. **Tag and Publish**:
+   Pull the merged commit locally on `main` and run:
+   ```bash
+   just tag-release
+   ```
+   *Gate 2 (Poka-Yoke):* This will fail if the post-merge CI on `main` hasn't completed successfully yet. If green, it creates the annotated git tag `v<version>` and pushes it, which triggers `cargo-dist` in CI to compile binaries, package installers, and publish the GitHub Release.
+
+

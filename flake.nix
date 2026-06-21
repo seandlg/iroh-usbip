@@ -63,6 +63,7 @@
             pkgs.pkg-config
             pkgs.libusb1
             pkgs.just
+            pkgs.git-cliff
           ];
         };
 
