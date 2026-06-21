@@ -1,3 +1,7 @@
+pub mod protocol;
+pub mod engine;
+
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,12 +317,16 @@ pub fn list_physical_devices() -> anyhow::Result<Vec<PhysicalUsbDevice>> {
     Ok(list)
 }
 
+pub type MockTransferCallback = Arc<dyn Fn(String, Vec<u8>) -> anyhow::Result<Vec<u8>> + Send + Sync>;
+
 pub struct MockUsbDevice {
     pub bus_num: u8,
     pub dev_addr: u8,
     pub dev_speed: UsbSpeed,
     pub descriptor: UsbDeviceDescriptor,
     pub config_descriptor: UsbConfigDescriptor,
+    pub transfer_handler: Option<MockTransferCallback>,
+    pub dropped: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 pub struct MockUsbDeviceHandle {
@@ -328,6 +336,16 @@ pub struct MockUsbDeviceHandle {
     pub manufacturer: String,
     pub product: String,
     pub serial_number: String,
+    pub transfer_handler: Option<MockTransferCallback>,
+    pub dropped: Option<Arc<std::sync::atomic::AtomicBool>>,
+}
+
+impl Drop for MockUsbDeviceHandle {
+    fn drop(&mut self) {
+        if let Some(ref flag) = self.dropped {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
 }
 
 impl UsbDevice for MockUsbDevice {
@@ -361,6 +379,8 @@ impl UsbDevice for MockUsbDevice {
             manufacturer: "Mock Manufacturer".to_string(),
             product: "Mock Product".to_string(),
             serial_number: "Mock Serial".to_string(),
+            transfer_handler: self.transfer_handler.clone(),
+            dropped: self.dropped.clone(),
         })
     }
 }
@@ -403,28 +423,70 @@ impl UsbDeviceHandle for MockUsbDeviceHandle {
         Ok(*self.kernel_drivers_active.get(&interface).unwrap_or(&true))
     }
 
-    fn read_control(&mut self, _request_type: u8, _request: u8, _value: u16, _index: u16, _buf: &mut [u8], _timeout: Duration) -> anyhow::Result<usize> {
-        Ok(0)
+    fn read_control(&mut self, request_type: u8, request: u8, value: u16, index: u16, buf: &mut [u8], _timeout: Duration) -> anyhow::Result<usize> {
+        if let Some(ref handler) = self.transfer_handler {
+            let action = format!("control_read:{}:{}:{}:{}", request_type, request, value, index);
+            let res = handler(action, vec![])?;
+            let len = res.len().min(buf.len());
+            buf[..len].copy_from_slice(&res[..len]);
+            Ok(len)
+        } else {
+            Ok(0)
+        }
     }
 
-    fn write_control(&mut self, _request_type: u8, _request: u8, _value: u16, _index: u16, _data: &[u8], _timeout: Duration) -> anyhow::Result<usize> {
-        Ok(0)
+    fn write_control(&mut self, request_type: u8, request: u8, value: u16, index: u16, data: &[u8], _timeout: Duration) -> anyhow::Result<usize> {
+        if let Some(ref handler) = self.transfer_handler {
+            let action = format!("control_write:{}:{}:{}:{}", request_type, request, value, index);
+            let res = handler(action, data.to_vec())?;
+            Ok(res.len())
+        } else {
+            Ok(0)
+        }
     }
 
-    fn read_bulk(&mut self, _endpoint: u8, _buf: &mut [u8], _timeout: Duration) -> anyhow::Result<usize> {
-        Ok(0)
+    fn read_bulk(&mut self, endpoint: u8, buf: &mut [u8], _timeout: Duration) -> anyhow::Result<usize> {
+        if let Some(ref handler) = self.transfer_handler {
+            let action = format!("bulk_read:{}", endpoint);
+            let res = handler(action, vec![])?;
+            let len = res.len().min(buf.len());
+            buf[..len].copy_from_slice(&res[..len]);
+            Ok(len)
+        } else {
+            Ok(0)
+        }
     }
 
-    fn write_bulk(&mut self, _endpoint: u8, _data: &[u8], _timeout: Duration) -> anyhow::Result<usize> {
-        Ok(0)
+    fn write_bulk(&mut self, endpoint: u8, data: &[u8], _timeout: Duration) -> anyhow::Result<usize> {
+        if let Some(ref handler) = self.transfer_handler {
+            let action = format!("bulk_write:{}", endpoint);
+            let res = handler(action, data.to_vec())?;
+            Ok(res.len())
+        } else {
+            Ok(0)
+        }
     }
 
-    fn read_interrupt(&mut self, _endpoint: u8, _buf: &mut [u8], _timeout: Duration) -> anyhow::Result<usize> {
-        Ok(0)
+    fn read_interrupt(&mut self, endpoint: u8, buf: &mut [u8], _timeout: Duration) -> anyhow::Result<usize> {
+        if let Some(ref handler) = self.transfer_handler {
+            let action = format!("interrupt_read:{}", endpoint);
+            let res = handler(action, vec![])?;
+            let len = res.len().min(buf.len());
+            buf[..len].copy_from_slice(&res[..len]);
+            Ok(len)
+        } else {
+            Ok(0)
+        }
     }
 
-    fn write_interrupt(&mut self, _endpoint: u8, _data: &[u8], _timeout: Duration) -> anyhow::Result<usize> {
-        Ok(0)
+    fn write_interrupt(&mut self, endpoint: u8, data: &[u8], _timeout: Duration) -> anyhow::Result<usize> {
+        if let Some(ref handler) = self.transfer_handler {
+            let action = format!("interrupt_write:{}", endpoint);
+            let res = handler(action, data.to_vec())?;
+            Ok(res.len())
+        } else {
+            Ok(0)
+        }
     }
 
     fn read_manufacturer_string(&self, _desc: &UsbDeviceDescriptor) -> anyhow::Result<String> {
@@ -474,6 +536,8 @@ mod tests {
             dev_speed: UsbSpeed::High,
             descriptor: desc.clone(),
             config_descriptor: config,
+            transfer_handler: None,
+            dropped: None,
         };
 
         assert_eq!(dev.bus_number(), 1);
