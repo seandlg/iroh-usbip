@@ -294,10 +294,59 @@ impl UsbipHeaderRetUnlink {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsbipIsoPacketDescriptor {
+    pub offset: u32,
+    pub length: u32,
+    pub actual_length: u32,
+    pub status: u32,
+}
+
+impl UsbipIsoPacketDescriptor {
+    pub fn to_bytes(&self) -> [u8; 16] {
+        let mut buf = [0u8; 16];
+        buf[0..4].copy_from_slice(&self.offset.to_be_bytes());
+        buf[4..8].copy_from_slice(&self.length.to_be_bytes());
+        buf[8..12].copy_from_slice(&self.actual_length.to_be_bytes());
+        buf[12..16].copy_from_slice(&self.status.to_be_bytes());
+        buf
+    }
+
+    pub fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self {
+            offset: u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            length: u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+            actual_length: u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
+            status: u32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]),
+        }
+    }
+}
+
 #[cfg(test)]
 
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_usbip_iso_packet_descriptor_serialization() {
+        let desc = UsbipIsoPacketDescriptor {
+            offset: 1024,
+            length: 512,
+            actual_length: 256,
+            status: 0,
+        };
+        let bytes = desc.to_bytes();
+        let expected = [
+            0x00, 0x00, 0x04, 0x00, // offset: 1024
+            0x00, 0x00, 0x02, 0x00, // length: 512
+            0x00, 0x00, 0x01, 0x00, // actual_length: 256
+            0x00, 0x00, 0x00, 0x00, // status: 0
+        ];
+        assert_eq!(bytes, expected);
+
+        let deserialized = UsbipIsoPacketDescriptor::from_bytes(bytes);
+        assert_eq!(deserialized, desc);
+    }
 
     #[test]
     fn test_op_common_serialization() {

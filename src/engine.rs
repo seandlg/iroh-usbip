@@ -8,7 +8,7 @@ use crate::protocol::{
     UsbipUsbDevice, UsbipUsbInterface,
     OpCommon, OpDevlistReply, OpImportRequest, ST_OK, ST_NA, ST_DEV_BUSY,
     UsbipHeaderBasic, UsbipHeaderCmdSubmit, UsbipHeaderRetSubmit,
-    UsbipHeaderCmdUnlink, UsbipHeaderRetUnlink,
+    UsbipHeaderCmdUnlink, UsbipHeaderRetUnlink, UsbipIsoPacketDescriptor,
 };
 
 pub async fn run_usbip_session<S, D>(mut stream: S, devices: Vec<Arc<D>>) -> anyhow::Result<()>
@@ -230,6 +230,19 @@ where
                                 stream.read_exact(&mut data).await?;
                             }
 
+                            // Read isochronous packet descriptors if number_of_packets > 0
+                            let mut iso_descriptors = Vec::new();
+                            if cmd_submit.number_of_packets > 0 {
+                                let total_desc_bytes = (cmd_submit.number_of_packets as usize) * 16;
+                                let mut desc_buf = vec![0u8; total_desc_bytes];
+                                stream.read_exact(&mut desc_buf).await?;
+                                for chunk in desc_buf.chunks_exact(16) {
+                                    let mut arr = [0u8; 16];
+                                    arr.copy_from_slice(chunk);
+                                    iso_descriptors.push(UsbipIsoPacketDescriptor::from_bytes(arr));
+                                }
+                            }
+
                             let timeout = std::time::Duration::from_secs(5);
                             let transfer_res: (i32, Vec<u8>) = if basic.ep == 0 {
                                 let bm_request_type = cmd_submit.setup[0];
@@ -322,7 +335,7 @@ where
                                 status,
                                 actual_length: resp_data.len() as i32,
                                 start_frame: 0,
-                                number_of_packets: 0,
+                                number_of_packets: cmd_submit.number_of_packets,
                                 error_count: 0,
                             };
                             let mut resp = [0u8; 48];
@@ -333,6 +346,22 @@ where
                             if basic.direction == 1 {
                                 stream.write_all(&resp_data).await?;
                             }
+
+                            // Write back dummy descriptors if number_of_packets > 0 and IN transfer
+                            if basic.direction == 1 && cmd_submit.number_of_packets > 0 {
+                                let mut dummy_desc_bytes = Vec::with_capacity(iso_descriptors.len() * 16);
+                                for desc in &iso_descriptors {
+                                    let dummy_desc = UsbipIsoPacketDescriptor {
+                                        offset: desc.offset,
+                                        length: desc.length,
+                                        actual_length: desc.length,
+                                        status: 0,
+                                    };
+                                    dummy_desc_bytes.extend_from_slice(&dummy_desc.to_bytes());
+                                }
+                                stream.write_all(&dummy_desc_bytes).await?;
+                            }
+
                             stream.flush().await?;
                         }
                         USBIP_CMD_UNLINK => {
