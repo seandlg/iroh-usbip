@@ -4,6 +4,8 @@
 
 Secure P2P USB-over-IP. Tunnel physical USB devices to remote clients over encrypted Iroh P2P streams with zero network configuration.
 
+[![asciicast](https://asciinema.org/a/dAc9YddFvIhRtANi.svg)](https://asciinema.org/a/dAc9YddFvIhRtANi)
+
 ## Documentation Index
 
 To keep this project highly maintainable and avoid documentation drift, we separate system concerns:
@@ -22,14 +24,17 @@ This guide is for end-users who want to install the `iroh-usbip` tool and share 
 ### Prerequisites
 
 #### Host Machine (Sharing physical devices)
-*   **Linux/macOS**: No manual dependencies are needed to run the pre-built binaries. The system library `libusb-1.0` is statically compiled into the release.
+*   **Linux/macOS**: No manual dependencies are needed. The system library `libusb-1.0` is statically compiled into the release. 
+    *(Note: Sharing physical devices requires root/sudo privileges on both Linux and macOS to claim the USB interface and detach any active OS drivers).*
+*   **Windows (Untested / Experimental)**: Supported but untested. Windows restricts direct user-space USB access, so you must associate the physical USB device you want to share with the `WinUSB` driver using [Zadig](https://zadig.akeo.ie/) before sharing.
 
 #### Client Machine (Mounting remote devices)
 *   **Linux**: Requires the `vhci-hcd` kernel module loaded. Load it with:
     ```bash
     sudo modprobe vhci-hcd
     ```
-*   **Windows**: Requires a VHCI driver interface (macOS is currently out of scope for clients).
+*   **Windows (Untested / Experimental)**: Requires a VHCI driver interface. Install the virtual controller driver from [usbip-win](https://github.com/cezanne/usbip-win).
+*   **macOS**: Client support (mounting remote devices on macOS) is currently out of scope.
 
 ### Installation
 
@@ -56,55 +61,97 @@ If you run Nix, you can install or run `iroh-usbip` directly:
     ```
 
 #### Option 3: From Source (Cargo Fallback)
-If you compile from source, you must have the `libusb-1.0` development files installed on your system:
-*   **macOS**: `brew install libusb`
-*   **Debian/Ubuntu**: `sudo apt-get install libusb-1.0-0-dev`
+To compile from source, you only need the standard Rust toolchain (2024 edition) and a C compiler (like `gcc`, `clang`, or MSVC build tools). The underlying `libusb-1.0` library is vendored and compiled statically automatically.
 
-Install the binary from our GitHub repository:
+Install the binary directly from our GitHub repository:
 ```bash
 cargo install --git https://github.com/seandlg/iroh-usbip
 ```
 
 ### Usage Workflow
 
-Follow these steps to share a physical USB device from a Host and mount it on a Client.
+`iroh-usbip` facilitates secure peer-to-peer sharing of USB devices directly over the internet without VPNs or port forwarding.
 
-#### 1. List physical USB devices on the Host
-Find the Vendor/Product IDs (VID/PID) or Bus ID of the device you want to share:
+```mermaid
+sequenceDiagram
+    participant Host as Host (Physical USB Device)
+    participant Iroh as Iroh P2P Tunnel (Encrypted)
+    participant Client as Client (Virtual USB Mount)
+
+    Host->>Iroh: 1. iroh-usbip share (generates ticket)
+    Client->>Iroh: 2. iroh-usbip attach <ticket>
+    Iroh->>Host: P2P Connection established
+    Client->>Client: Mounts to VHCI virtual port
+    Note over Host,Client: Real-time USB packets tunneled securely
+```
+
+#### Roles
+*   **Host**: The machine physically connected to the USB device. Running the `share` command detaches active OS drivers and serves the device.
+*   **Client**: The machine that wants to mount the device virtually. Running `attach` maps the remote device to a virtual controller port.
+*   **How Sharing Works**: Peer-to-peer (P2P) connections are established using the Iroh network. The traffic is end-to-end encrypted and automatically traverses firewalls and NATs using QUIC.
+
+---
+
+#### Concrete Walkthrough Example (Sharing a QEMU Tablet device)
+
+Watch a live terminal recording of this walkthrough:
+[![asciicast](https://asciinema.org/a/dAc9YddFvIhRtANi.svg)](https://asciinema.org/a/dAc9YddFvIhRtANi)
+
+##### 1. List physical USB devices on the Host
+Find the Vendor/Product IDs (VID/PID) of the device you want to share:
 ```bash
 iroh-usbip list
 ```
+*Output:*
+```text
+Bus 001 Device 001: ID 1d6b:0001 Linux Foundation 1.1 root hub
+Bus 001 Device 002: ID 0627:0001 Adomax Technology Co., Ltd QEMU Tablet
+```
 *(Note: If no devices show up or you get permission warnings, try running with `sudo iroh-usbip list`)*
 
-#### 2. Share the device on the Host
-Start the sharing server. This claims the device (detaching any active kernel drivers) and blocks in the foreground, printing a connection ticket:
+##### 2. Share the device on the Host
+Start the sharing server on the Host using the device's Vendor ID. This claims the device (detaching active kernel drivers) and prints a connection ticket:
 ```bash
-sudo iroh-usbip share --vid 1d6b --pid 0002
+sudo iroh-usbip share --vid 0627
 ```
 *Output:*
 ```text
-Sharing USB device 1d6b:0002...
+Sharing USB device Bus 001 Device 002: ID 0627:0001 QEMU QEMU USB Tablet...
 Connection ticket:
-<TICKET_STRING>
+endpointaaoj5z7ylpwmizgikhk352mave64budppioi36mxbc2vdze4yztwsbabaafhd4abv6oqeaiamruagmvptubacafzca6jnl45aiaqckqdiaaaacqcus4mk57772y547oexibq
 Waiting for client to connect...
 ```
 
-#### 3. Attach the device on the Client
-Using the generated ticket, mount the device as a local virtual USB device:
+##### 3. Attach the device on the Client
+On the Client machine, use the ticket to attach the device:
 ```bash
-sudo iroh-usbip attach <TICKET_STRING>
+sudo iroh-usbip attach endpointaaoj5z7ylpwmizgikhk352mave64budppioi36mxbc2vdze4yztwsbabaafhd4abv6oqeaiamruagmvptubacafzca6jnl45aiaqckqdiaaaacqcus4mk57772y547oexibq
 ```
 *Output:*
 ```text
 Connecting to remote shared device via Iroh P2P...
 Connected to Host! Querying shared devices...
-Found remote device: 1-1 (speed: High)
+Found remote device: 1-2 (speed: Full)
 Attaching to local virtual port: 0
 Successfully attached virtual device to VHCI port 0!
 Device is now connected. Press Ctrl+C to disconnect.
 ```
 
-Pressing `Ctrl+C` in either terminal will cleanly tear down the session, disconnect the virtual device, and reattach the driver on the Host.
+##### 4. Verify Attachment on the Client
+Run `lsusb` in another terminal on the Client. You will see the virtual device mounted on a new virtual bus:
+```bash
+lsusb
+```
+*Output:*
+```text
+Bus 001 Device 001: ID 1d6b:0001 Linux Foundation 1.1 root hub
+Bus 001 Device 002: ID 0627:0001 Adomax Technology Co., Ltd QEMU Tablet
+Bus 002 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 002 Device 002: ID 0627:0001 Adomax Technology Co., Ltd QEMU Tablet
+Bus 003 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+```
+
+Pressing `Ctrl+C` in either terminal cleanly terminates the P2P session, detaches the virtual device from the Client, and restores original drivers on the Host.
 
 ---
 
