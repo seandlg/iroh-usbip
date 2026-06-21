@@ -1,8 +1,10 @@
 pub mod protocol;
 pub mod engine;
 pub mod registry;
+pub mod vhci;
 
 pub use registry::{HostDeviceRegistry, DeviceQuery, RegistryDevice};
+pub use vhci::VhciController;
 
 use std::sync::Arc;
 use std::time::Duration;

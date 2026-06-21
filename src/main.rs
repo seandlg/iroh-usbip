@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use iroh_usbip::{HostDeviceRegistry, DeviceQuery};
+use iroh_usbip::{HostDeviceRegistry, DeviceQuery, UsbSpeed};
 use std::sync::Arc;
 use iroh::{Endpoint, endpoint::presets};
 use iroh_tickets::{Ticket, endpoint::EndpointTicket};
@@ -147,31 +147,173 @@ async fn main() -> anyhow::Result<()> {
             endpoint.close().await;
         }
         Commands::Attach { ticket: ticket_str } => {
+            let vhci = iroh_usbip::VhciController::new();
+            if !vhci.is_available() {
+                anyhow::bail!("Linux VHCI kernel driver (vhci-hcd) is not available. Please load it with 'sudo modprobe vhci-hcd'.");
+            }
+
             let ticket = EndpointTicket::decode_string(&ticket_str)?;
             let endpoint = Endpoint::bind(presets::N0).await?;
 
-            let local_addr = "127.0.0.1:3240";
-            let listener = tokio::net::TcpListener::bind(local_addr).await?;
-            println!("Local proxy listening on tcp://{}...", local_addr);
             println!("Connecting to remote shared device via Iroh P2P...");
+            let conn = endpoint.connect(ticket.endpoint_addr().clone(), b"iroh-usbip").await?;
+            println!("Connected to Host! Querying shared devices...");
 
-            let conn: iroh::endpoint::Connection = endpoint.connect(ticket.endpoint_addr().clone(), b"iroh-usbip").await?;
-            println!("Connected to Host! Tunnel established. Press Ctrl+C to disconnect.");
+            // 1. Fetch remote devices list
+            let (send, recv) = conn.open_bi().await?;
+            let mut host_stream = IrohStream { send, recv };
+            
+            let mut devlist_req = Vec::new();
+            devlist_req.extend_from_slice(&[
+                0x01, 0x11, // version: 0x0111
+                0x80, 0x05, // code: OP_REQ_DEVLIST (0x8005)
+                0x00, 0x00, 0x00, 0x00, // status: 0
+            ]);
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            host_stream.write_all(&devlist_req).await?;
+            host_stream.flush().await?;
 
-            // Accept local TCP connections
-            while let Ok((mut tcp_stream, peer_addr)) = listener.accept().await {
-                println!("Local client connected: {}", peer_addr);
-                let (send, recv) = conn.open_bi().await?;
-                let mut iroh_stream = IrohStream { send, recv };
-
-                tokio::spawn(async move {
-                    if let Err(e) = tokio::io::copy_bidirectional(&mut tcp_stream, &mut iroh_stream).await {
-                        eprintln!("Proxy forward error: {}", e);
-                    }
-                    println!("Local client disconnected: {}", peer_addr);
-                });
+            let mut header = [0u8; 8];
+            host_stream.read_exact(&mut header).await?;
+            if &header[0..2] != &[0x01, 0x11] || &header[2..4] != &[0x00, 0x05] {
+                anyhow::bail!("Invalid response from host during device query");
+            }
+            let status = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+            if status != 0 {
+                anyhow::bail!("Failed to query remote devices: status {}", status);
             }
 
+            let mut ndev_buf = [0u8; 4];
+            host_stream.read_exact(&mut ndev_buf).await?;
+            let ndev = u32::from_be_bytes(ndev_buf);
+            if ndev == 0 {
+                anyhow::bail!("No shared USB devices found on the remote host.");
+            }
+
+            // Read the first device info
+            let mut udev_buf = [0u8; 312];
+            host_stream.read_exact(&mut udev_buf).await?;
+            let dev = iroh_usbip::protocol::UsbipUsbDevice::from_bytes(&udev_buf);
+
+            // Read its interfaces to discard them from the stream
+            for _ in 0..dev.b_num_interfaces {
+                let mut intf_buf = [0u8; 4];
+                host_stream.read_exact(&mut intf_buf).await?;
+            }
+
+            // Extract busid, devid, speed
+            let busid_str = std::str::from_utf8(&dev.busid)?
+                .trim_end_matches('\0')
+                .to_string();
+            let devid = dev.devnum | (dev.busnum << 16);
+            
+            let speed = match dev.speed {
+                1 => UsbSpeed::Low,
+                2 => UsbSpeed::Full,
+                3 => UsbSpeed::High,
+                5 => UsbSpeed::Super,
+                6 => UsbSpeed::SuperPlus,
+                _ => UsbSpeed::Unknown,
+            };
+
+            println!("Found remote device: {} (speed: {:?})", busid_str, speed);
+
+            // 2. Find a free port
+            let port = vhci.find_free_port()?;
+            println!("Attaching to local virtual port: {}", port);
+
+            // 3. Start local TCP proxy listener on ephemeral port
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let local_port = listener.local_addr()?.port();
+            
+            // Spawn background task to accept proxy connections
+            let conn_clone = conn.clone();
+            let proxy_handle = tokio::spawn(async move {
+                while let Ok((mut tcp_stream, _peer_addr)) = listener.accept().await {
+                    let (send, recv) = match conn_clone.open_bi().await {
+                        Ok(streams) => streams,
+                        Err(e) => {
+                            eprintln!("Failed to open Iroh bi-stream: {}", e);
+                            break;
+                        }
+                    };
+                    let mut iroh_stream = IrohStream { send, recv };
+                    tokio::spawn(async move {
+                        if let Err(e) = tokio::io::copy_bidirectional(&mut tcp_stream, &mut iroh_stream).await {
+                            eprintln!("Proxy forward error: {}", e);
+                        }
+                    });
+                }
+            });
+
+            // 4. Connect client TcpStream to local proxy
+            let mut tcp_client = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", local_port)).await?;
+
+            // 5. Perform OP_REQ_IMPORT handshake on the client TcpStream
+            let mut import_req = Vec::new();
+            import_req.extend_from_slice(&[
+                0x01, 0x11, // version
+                0x80, 0x03, // OP_REQ_IMPORT
+                0x00, 0x00, 0x00, 0x00, // status
+            ]);
+            import_req.extend_from_slice(&iroh_usbip::protocol::pad_string(&busid_str, 32));
+            tcp_client.write_all(&import_req).await?;
+            tcp_client.flush().await?;
+
+            let mut import_header = [0u8; 8];
+            tcp_client.read_exact(&mut import_header).await?;
+            if &import_header[0..2] != &[0x01, 0x11] || &import_header[2..4] != &[0x00, 0x03] {
+                anyhow::bail!("Invalid handshake response from local proxy");
+            }
+            let import_status = u32::from_be_bytes([import_header[4], import_header[5], import_header[6], import_header[7]]);
+            if import_status != 0 {
+                anyhow::bail!("Import handshake failed with status: {}", import_status);
+            }
+
+            // Discard the returned 312 bytes from the stream
+            let mut discard_buf = [0u8; 312];
+            tcp_client.read_exact(&mut discard_buf).await?;
+
+            // 6. Convert TcpStream to RawFd using into_std & into_raw_fd
+            let std_stream = tcp_client.into_std()?;
+            
+            #[cfg(unix)]
+            let sockfd = {
+                use std::os::unix::io::IntoRawFd;
+                std_stream.into_raw_fd()
+            };
+            #[cfg(not(unix))]
+            let sockfd = 0;
+
+            // 7. Attach to VHCI
+            vhci.attach(port, sockfd, devid, speed)?;
+            println!("Successfully attached virtual device to VHCI port {}!", port);
+            println!("Device is now connected. Press Ctrl+C to disconnect.");
+
+            // 8. Capture shutdown signals (Ctrl+C / SIGINT / SIGTERM)
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{signal, SignalKind};
+                let mut sigint = signal(SignalKind::interrupt())?;
+                let mut sigterm = signal(SignalKind::terminate())?;
+                tokio::select! {
+                    _ = sigint.recv() => {}
+                    _ = sigterm.recv() => {}
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+
+            println!("\nDetaching virtual device from port {}...", port);
+            if let Err(e) = vhci.detach(port) {
+                eprintln!("Failed to detach port {}: {}", port, e);
+            } else {
+                println!("Successfully detached device.");
+            }
+
+            proxy_handle.abort();
             endpoint.close().await;
         }
     }

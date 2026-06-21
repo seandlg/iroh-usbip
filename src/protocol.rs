@@ -74,6 +74,41 @@ impl UsbipUsbDevice {
         buf.push(self.b_num_interfaces);
         buf
     }
+
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        let mut path = [0u8; 256];
+        path.copy_from_slice(&bytes[0..256]);
+        let mut busid = [0u8; 32];
+        busid.copy_from_slice(&bytes[256..288]);
+        let busnum = u32::from_be_bytes([bytes[288], bytes[289], bytes[290], bytes[291]]);
+        let devnum = u32::from_be_bytes([bytes[292], bytes[293], bytes[294], bytes[295]]);
+        let speed = u32::from_be_bytes([bytes[296], bytes[297], bytes[298], bytes[299]]);
+        let id_vendor = u16::from_be_bytes([bytes[300], bytes[301]]);
+        let id_product = u16::from_be_bytes([bytes[302], bytes[303]]);
+        let bcd_device = u16::from_be_bytes([bytes[304], bytes[305]]);
+        let b_device_class = bytes[306];
+        let b_device_subclass = bytes[307];
+        let b_device_protocol = bytes[308];
+        let b_configuration_value = bytes[309];
+        let b_num_configurations = bytes[310];
+        let b_num_interfaces = bytes[311];
+        Self {
+            path,
+            busid,
+            busnum,
+            devnum,
+            speed,
+            id_vendor,
+            id_product,
+            bcd_device,
+            b_device_class,
+            b_device_subclass,
+            b_device_protocol,
+            b_configuration_value,
+            b_num_configurations,
+            b_num_interfaces,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
