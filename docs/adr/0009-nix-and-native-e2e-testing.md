@@ -1,0 +1,5 @@
+# Nix Reproducible Builds and Native E2E Testing
+
+To ensure reproducible builds, simplify system dependency management (`libusb`, `pkg-config`), and verify kernel-level integration without excessive CI overhead, we decided to adopt Nix (specifically the Lix implementation) for local development environments and CI caching, while executing end-to-end (E2E) tests natively on the Linux runner host. 
+
+We will use a lightweight Nix Flake with Crane to package the Rust application and cache Cargo dependencies. For testing, standard unit and protocol integration tests will run inside the hermetic Nix build environment. However, E2E tests (which require loading `vhci-hcd` and `dummy-hcd` kernel modules and interacting with `/sys`) will run natively on the host runner using a `justfile` and a bash helper script executed under `sudo nix develop`. This avoids the substantial performance overhead and complexity of running virtualized QEMU VMs on CI runners, while preserving hermetic dependency pinning for all user-space libraries.
