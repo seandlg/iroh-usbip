@@ -6,6 +6,14 @@ Secure P2P USB-over-IP. Tunnel physical USB devices to remote clients over encry
 
 ![iroh-usbip demo](docs/assets/demo.gif)
 
+## OS Support Matrix
+
+| Operating System | Host Role (Share) | Client Role (Attach) | Notes |
+| :--- | :---: | :---: | :--- |
+| **Linux** | ✅ Supported | ✅ Supported | Requires the `vhci-hcd` kernel module for attaching. |
+| **macOS** | ✅ Supported | ❌ Not Supported | Mounting virtual USB devices is not supported on macOS. |
+| **Windows** | ⚠️ Experimental | ❌ Not Supported | Host sharing is experimental (requires associating the device with `WinUSB` via Zadig). |
+
 ## Installation
 
 Install the latest pre-compiled binary via our installer script:
