@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
-use iroh_usbip::{HostDeviceRegistry, DeviceQuery, UsbSpeed};
-use std::sync::Arc;
 use iroh::{Endpoint, endpoint::presets};
 use iroh_tickets::{Ticket, endpoint::EndpointTicket};
+use iroh_usbip::{DeviceQuery, HostDeviceRegistry, UsbSpeed};
+use std::sync::Arc;
 
 struct IrohStream {
     recv: iroh::endpoint::RecvStream,
@@ -26,7 +26,9 @@ impl tokio::io::AsyncWrite for IrohStream {
         buf: &[u8],
     ) -> std::task::Poll<std::io::Result<usize>> {
         match std::pin::Pin::new(&mut self.send).poll_write(cx, buf) {
-            std::task::Poll::Ready(res) => std::task::Poll::Ready(res.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))),
+            std::task::Poll::Ready(res) => {
+                std::task::Poll::Ready(res.map_err(std::io::Error::other))
+            }
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }
@@ -36,7 +38,9 @@ impl tokio::io::AsyncWrite for IrohStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         match std::pin::Pin::new(&mut self.send).poll_flush(cx) {
-            std::task::Poll::Ready(res) => std::task::Poll::Ready(res.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))),
+            std::task::Poll::Ready(res) => {
+                std::task::Poll::Ready(res.map_err(std::io::Error::other))
+            }
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }
@@ -46,7 +50,9 @@ impl tokio::io::AsyncWrite for IrohStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         match std::pin::Pin::new(&mut self.send).poll_shutdown(cx) {
-            std::task::Poll::Ready(res) => std::task::Poll::Ready(res.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))),
+            std::task::Poll::Ready(res) => {
+                std::task::Poll::Ready(res.map_err(std::io::Error::other))
+            }
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }
@@ -107,14 +113,15 @@ async fn main() -> anyhow::Result<()> {
                 println!("{}", dev.cli_info);
             }
         }
-        Commands::Share { vid, pid, bus_id, address } => {
+        Commands::Share {
+            vid,
+            pid,
+            bus_id,
+            address,
+        } => {
             let registry = HostDeviceRegistry::new_physical()?;
-            let query = DeviceQuery::from_cli_args(
-                vid.as_deref(),
-                pid.as_deref(),
-                bus_id,
-                address,
-            )?;
+            let query =
+                DeviceQuery::from_cli_args(vid.as_deref(), pid.as_deref(), bus_id, address)?;
             let matched = registry.find_single_device(&query)?;
             let dev = matched.device;
 
@@ -138,7 +145,9 @@ async fn main() -> anyhow::Result<()> {
                 let stream = IrohStream { send, recv };
                 println!("Session started. Redirecting USB traffic.");
                 let static_registry = HostDeviceRegistry::new_static(vec![Arc::clone(&dev)]);
-                if let Err(e) = iroh_usbip::engine::run_usbip_session(stream, Arc::new(static_registry)).await {
+                if let Err(e) =
+                    iroh_usbip::engine::run_usbip_session(stream, Arc::new(static_registry)).await
+                {
                     eprintln!("Session error: {}", e);
                 }
                 println!("Session ended. Detaching client.");
@@ -149,20 +158,24 @@ async fn main() -> anyhow::Result<()> {
         Commands::Attach { ticket: ticket_str } => {
             let vhci = iroh_usbip::VhciController::new();
             if !vhci.is_available() {
-                anyhow::bail!("Linux VHCI kernel driver (vhci-hcd) is not available. Please load it with 'sudo modprobe vhci-hcd'.");
+                anyhow::bail!(
+                    "Linux VHCI kernel driver (vhci-hcd) is not available. Please load it with 'sudo modprobe vhci-hcd'."
+                );
             }
 
             let ticket = EndpointTicket::decode_string(&ticket_str)?;
             let endpoint = Endpoint::bind(presets::N0).await?;
 
             println!("Connecting to remote shared device via Iroh P2P...");
-            let conn = endpoint.connect(ticket.endpoint_addr().clone(), b"iroh-usbip").await?;
+            let conn = endpoint
+                .connect(ticket.endpoint_addr().clone(), b"iroh-usbip")
+                .await?;
             println!("Connected to Host! Querying shared devices...");
 
             // 1. Fetch remote devices list
             let (send, recv) = conn.open_bi().await?;
             let mut host_stream = IrohStream { send, recv };
-            
+
             let mut devlist_req = Vec::new();
             devlist_req.extend_from_slice(&[
                 0x01, 0x11, // version: 0x0111
@@ -175,7 +188,7 @@ async fn main() -> anyhow::Result<()> {
 
             let mut header = [0u8; 8];
             host_stream.read_exact(&mut header).await?;
-            if &header[0..2] != &[0x01, 0x11] || &header[2..4] != &[0x00, 0x05] {
+            if header[0..2] != [0x01, 0x11] || header[2..4] != [0x00, 0x05] {
                 anyhow::bail!("Invalid response from host during device query");
             }
             let status = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
@@ -206,7 +219,7 @@ async fn main() -> anyhow::Result<()> {
                 .trim_end_matches('\0')
                 .to_string();
             let devid = dev.devnum | (dev.busnum << 16);
-            
+
             let speed = match dev.speed {
                 1 => UsbSpeed::Low,
                 2 => UsbSpeed::Full,
@@ -225,7 +238,7 @@ async fn main() -> anyhow::Result<()> {
             // 3. Start local TCP proxy listener on ephemeral port
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
             let local_port = listener.local_addr()?.port();
-            
+
             // Spawn background task to accept proxy connections
             let conn_clone = conn.clone();
             let proxy_handle = tokio::spawn(async move {
@@ -239,7 +252,9 @@ async fn main() -> anyhow::Result<()> {
                     };
                     let mut iroh_stream = IrohStream { send, recv };
                     tokio::spawn(async move {
-                        if let Err(e) = tokio::io::copy_bidirectional(&mut tcp_stream, &mut iroh_stream).await {
+                        if let Err(e) =
+                            tokio::io::copy_bidirectional(&mut tcp_stream, &mut iroh_stream).await
+                        {
                             eprintln!("Proxy forward error: {}", e);
                         }
                     });
@@ -247,7 +262,8 @@ async fn main() -> anyhow::Result<()> {
             });
 
             // 4. Connect client TcpStream to local proxy
-            let mut tcp_client = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", local_port)).await?;
+            let mut tcp_client =
+                tokio::net::TcpStream::connect(format!("127.0.0.1:{}", local_port)).await?;
 
             // 5. Perform OP_REQ_IMPORT handshake on the client TcpStream
             let mut import_req = Vec::new();
@@ -262,10 +278,15 @@ async fn main() -> anyhow::Result<()> {
 
             let mut import_header = [0u8; 8];
             tcp_client.read_exact(&mut import_header).await?;
-            if &import_header[0..2] != &[0x01, 0x11] || &import_header[2..4] != &[0x00, 0x03] {
+            if import_header[0..2] != [0x01, 0x11] || import_header[2..4] != [0x00, 0x03] {
                 anyhow::bail!("Invalid handshake response from local proxy");
             }
-            let import_status = u32::from_be_bytes([import_header[4], import_header[5], import_header[6], import_header[7]]);
+            let import_status = u32::from_be_bytes([
+                import_header[4],
+                import_header[5],
+                import_header[6],
+                import_header[7],
+            ]);
             if import_status != 0 {
                 anyhow::bail!("Import handshake failed with status: {}", import_status);
             }
@@ -276,7 +297,7 @@ async fn main() -> anyhow::Result<()> {
 
             // 6. Convert TcpStream to RawFd using into_std & into_raw_fd
             let std_stream = tcp_client.into_std()?;
-            
+
             #[cfg(unix)]
             let sockfd = {
                 use std::os::unix::io::IntoRawFd;
@@ -287,13 +308,16 @@ async fn main() -> anyhow::Result<()> {
 
             // 7. Attach to VHCI
             vhci.attach(port, sockfd, devid, speed)?;
-            println!("Successfully attached virtual device to VHCI port {}!", port);
+            println!(
+                "Successfully attached virtual device to VHCI port {}!",
+                port
+            );
             println!("Device is now connected. Press Ctrl+C to disconnect.");
 
             // 8. Capture shutdown signals (Ctrl+C / SIGINT / SIGTERM)
             #[cfg(unix)]
             {
-                use tokio::signal::unix::{signal, SignalKind};
+                use tokio::signal::unix::{SignalKind, signal};
                 let mut sigint = signal(SignalKind::interrupt())?;
                 let mut sigterm = signal(SignalKind::terminate())?;
                 tokio::select! {

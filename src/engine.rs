@@ -1,12 +1,14 @@
-use std::sync::Arc;
-use crate::{UsbDevice, UsbDeviceHandle};
 use crate::protocol::{
-    ST_OK, ST_NA, ST_DEV_BUSY, USBIP_RET_SUBMIT, USBIP_RET_UNLINK,
-    UsbipHeaderBasic, UsbipHeaderRetSubmit, UsbipHeaderRetUnlink,
-    UsbipRequest, UsbipResponse, UsbipStream,
+    ST_DEV_BUSY, ST_NA, ST_OK, USBIP_RET_SUBMIT, USBIP_RET_UNLINK, UsbipHeaderBasic,
+    UsbipHeaderRetSubmit, UsbipHeaderRetUnlink, UsbipRequest, UsbipResponse, UsbipStream,
 };
+use crate::{UsbDevice, UsbDeviceHandle};
+use std::sync::Arc;
 
-pub async fn run_usbip_session<S, D>(stream: S, registry: Arc<crate::HostDeviceRegistry<D>>) -> anyhow::Result<()>
+pub async fn run_usbip_session<S, D>(
+    stream: S,
+    registry: Arc<crate::HostDeviceRegistry<D>>,
+) -> anyhow::Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     D: UsbDevice + 'static,
@@ -27,12 +29,16 @@ where
                 let detail = crate::protocol::UsbipDeviceDetail::new(entry.device.as_ref())?;
                 details.push(detail);
             }
-            ustream.write_handshake_response(UsbipResponse::Devlist { devices: details }).await?;
+            ustream
+                .write_handshake_response(UsbipResponse::Devlist { devices: details })
+                .await?;
         }
         UsbipRequest::Import { busid: req_busid } => {
             // Find matching device using registry query
-            let mut query = crate::DeviceQuery::default();
-            query.bus_id = Some(req_busid);
+            let query = crate::DeviceQuery {
+                bus_id: Some(req_busid),
+                ..Default::default()
+            };
 
             if let Ok(entry) = registry.find_single_device(&query) {
                 let dev = entry.device;
@@ -44,30 +50,37 @@ where
                         } else {
                             ST_NA
                         };
-                        ustream.write_handshake_response(UsbipResponse::Import { status, device: None }).await?;
+                        ustream
+                            .write_handshake_response(UsbipResponse::Import {
+                                status,
+                                device: None,
+                            })
+                            .await?;
                         return Ok(());
                     }
                 };
-                let config = dev.config_descriptor(0).unwrap_or_else(|_| crate::UsbConfigDescriptor {
-                    num_interfaces: 0,
-                    configuration_value: 1,
-                    max_power: 500,
-                    self_powered: true,
-                    remote_wakeup: false,
-                    interfaces: vec![],
-                });
+                let config =
+                    dev.config_descriptor(0)
+                        .unwrap_or_else(|_| crate::UsbConfigDescriptor {
+                            num_interfaces: 0,
+                            configuration_value: 1,
+                            max_power: 500,
+                            self_powered: true,
+                            remote_wakeup: false,
+                            interfaces: vec![],
+                        });
 
                 // Detach active host kernel drivers and claim interfaces
                 let mut detached_interfaces = Vec::new();
                 let mut claimed_interfaces = Vec::new();
                 for interface in &config.interfaces {
                     let iface_num = interface.interface_number;
-                    if let Ok(true) = inner_handle.kernel_driver_active(iface_num) {
-                        if let Ok(_) = inner_handle.detach_kernel_driver(iface_num) {
-                            detached_interfaces.push(iface_num);
-                        }
+                    if let Ok(true) = inner_handle.kernel_driver_active(iface_num)
+                        && inner_handle.detach_kernel_driver(iface_num).is_ok()
+                    {
+                        detached_interfaces.push(iface_num);
                     }
-                    if let Ok(_) = inner_handle.claim_interface(iface_num) {
+                    if inner_handle.claim_interface(iface_num).is_ok() {
                         claimed_interfaces.push(iface_num);
                     }
                 }
@@ -79,10 +92,12 @@ where
                 };
 
                 let detail = crate::protocol::UsbipDeviceDetail::new(dev.as_ref())?;
-                ustream.write_handshake_response(UsbipResponse::Import {
-                    status: ST_OK,
-                    device: Some(detail),
-                }).await?;
+                ustream
+                    .write_handshake_response(UsbipResponse::Import {
+                        status: ST_OK,
+                        device: Some(Box::new(detail)),
+                    })
+                    .await?;
 
                 // Transition to Transfer Phase Loop
                 let mut runner = TransferRunner::new(dev.as_ref(), &mut *handle);
@@ -92,7 +107,12 @@ where
                 }
             } else {
                 // Not found
-                ustream.write_handshake_response(UsbipResponse::Import { status: ST_NA, device: None }).await?;
+                ustream
+                    .write_handshake_response(UsbipResponse::Import {
+                        status: ST_NA,
+                        device: None,
+                    })
+                    .await?;
             }
         }
         _ => anyhow::bail!("Invalid handshake phase request"),
@@ -129,7 +149,10 @@ impl<'a, H: crate::UsbDeviceHandle> Drop for DriverGuard<'a, H> {
         }
         for &iface in &self.detached_interfaces {
             if let Err(e) = self.handle.attach_kernel_driver(iface) {
-                eprintln!("Warning: Failed to re-attach kernel driver to interface {}: {}", iface, e);
+                eprintln!(
+                    "Warning: Failed to re-attach kernel driver to interface {}: {}",
+                    iface, e
+                );
             }
         }
     }
@@ -163,7 +186,14 @@ impl<'a, D: UsbDevice, H: UsbDeviceHandle> TransferRunner<'a, D, H> {
                     if basic.direction == 1 {
                         // Control Read
                         let mut buf = vec![0u8; cmd_submit.transfer_buffer_length.max(0) as usize];
-                        match self.handle.read_control(bm_request_type, b_request, w_value, w_index, &mut buf, timeout) {
+                        match self.handle.read_control(
+                            bm_request_type,
+                            b_request,
+                            w_value,
+                            w_index,
+                            &mut buf,
+                            timeout,
+                        ) {
                             Ok(len) => {
                                 buf.truncate(len);
                                 (0, buf)
@@ -172,7 +202,14 @@ impl<'a, D: UsbDevice, H: UsbDeviceHandle> TransferRunner<'a, D, H> {
                         }
                     } else {
                         // Control Write
-                        match self.handle.write_control(bm_request_type, b_request, w_value, w_index, &data, timeout) {
+                        match self.handle.write_control(
+                            bm_request_type,
+                            b_request,
+                            w_value,
+                            w_index,
+                            &data,
+                            timeout,
+                        ) {
                             Ok(_) => (0, vec![]),
                             Err(_) => (-32, vec![]),
                         }
@@ -186,7 +223,9 @@ impl<'a, D: UsbDevice, H: UsbDeviceHandle> TransferRunner<'a, D, H> {
                             for setting in interface.settings {
                                 for endpoint in setting.endpoints {
                                     if endpoint.address == ep_addr {
-                                        if endpoint.transfer_type == crate::UsbTransferType::Interrupt {
+                                        if endpoint.transfer_type
+                                            == crate::UsbTransferType::Interrupt
+                                        {
                                             is_interrupt = true;
                                         }
                                         break 'outer;
@@ -198,7 +237,8 @@ impl<'a, D: UsbDevice, H: UsbDeviceHandle> TransferRunner<'a, D, H> {
 
                     if is_interrupt {
                         if basic.direction == 1 {
-                            let mut buf = vec![0u8; cmd_submit.transfer_buffer_length.max(0) as usize];
+                            let mut buf =
+                                vec![0u8; cmd_submit.transfer_buffer_length.max(0) as usize];
                             match self.handle.read_interrupt(ep_addr, &mut buf, timeout) {
                                 Ok(len) => {
                                     buf.truncate(len);
@@ -215,7 +255,8 @@ impl<'a, D: UsbDevice, H: UsbDeviceHandle> TransferRunner<'a, D, H> {
                     } else {
                         // Default to Bulk
                         if basic.direction == 1 {
-                            let mut buf = vec![0u8; cmd_submit.transfer_buffer_length.max(0) as usize];
+                            let mut buf =
+                                vec![0u8; cmd_submit.transfer_buffer_length.max(0) as usize];
                             match self.handle.read_bulk(ep_addr, &mut buf, timeout) {
                                 Ok(len) => {
                                     buf.truncate(len);
@@ -279,8 +320,8 @@ impl<'a, D: UsbDevice, H: UsbDeviceHandle> TransferRunner<'a, D, H> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockUsbDevice, UsbDeviceDescriptor, UsbConfigDescriptor, UsbSpeed};
-    use crate::protocol::{UsbipHeaderBasic, UsbipHeaderCmdSubmit, USBIP_CMD_SUBMIT};
+    use crate::protocol::{USBIP_CMD_SUBMIT, UsbipHeaderBasic, UsbipHeaderCmdSubmit};
+    use crate::{MockUsbDevice, UsbConfigDescriptor, UsbDeviceDescriptor, UsbSpeed};
     use std::sync::Arc;
 
     #[test]
@@ -354,7 +395,13 @@ mod tests {
         };
 
         let resp = runner.execute(req).unwrap();
-        if let UsbipResponse::Submit { basic: _, submit, data, iso_descriptors: _ } = resp {
+        if let UsbipResponse::Submit {
+            basic: _,
+            submit,
+            data,
+            iso_descriptors: _,
+        } = resp
+        {
             assert_eq!(submit.status, 0);
             assert_eq!(submit.actual_length, 2);
             assert_eq!(data, vec![0xAA, 0xBB]);
@@ -363,4 +410,3 @@ mod tests {
         }
     }
 }
-

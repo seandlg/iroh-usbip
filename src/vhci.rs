@@ -1,6 +1,6 @@
+use crate::UsbSpeed;
 use std::fs;
 use std::path::{Path, PathBuf};
-use crate::UsbSpeed;
 
 #[cfg(unix)]
 pub type RawFd = std::os::unix::io::RawFd;
@@ -30,11 +30,17 @@ pub fn find_vhci_dir() -> Option<PathBuf> {
     None
 }
 
+impl Default for VhciController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VhciController {
     /// Create a new VHCI controller detecting the sysfs path on the system.
     pub fn new() -> Self {
-        let path = find_vhci_dir()
-            .unwrap_or_else(|| PathBuf::from("/sys/devices/platform/vhci_hcd.0"));
+        let path =
+            find_vhci_dir().unwrap_or_else(|| PathBuf::from("/sys/devices/platform/vhci_hcd.0"));
         Self { sysfs_path: path }
     }
 
@@ -75,16 +81,16 @@ impl VhciController {
                 }
 
                 let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 7 {
-                    if let (Ok(port), Ok(status), Ok(sockfd)) = (
+                if parts.len() >= 7
+                    && let (Ok(port), Ok(status), Ok(sockfd)) = (
                         parts[1].parse::<u32>(),
                         parts[2].parse::<u32>(),
                         parts[5].parse::<u32>(),
-                    ) {
-                        // Port is free if status is VDEV_ST_NULL (4) or VDEV_ST_NOTASSIGNED (5) or sockfd is 0
-                        if status == 4 || status == 5 || sockfd == 0 {
-                            return Ok(port);
-                        }
+                    )
+                {
+                    // Port is free if status is VDEV_ST_NULL (4) or VDEV_ST_NOTASSIGNED (5) or sockfd is 0
+                    if status == 4 || status == 5 || sockfd == 0 {
+                        return Ok(port);
                     }
                 }
             }
@@ -94,7 +100,13 @@ impl VhciController {
     }
 
     /// Attach a socket file descriptor to a virtual port.
-    pub fn attach(&self, port: u32, sockfd: RawFd, devid: u32, speed: UsbSpeed) -> anyhow::Result<()> {
+    pub fn attach(
+        &self,
+        port: u32,
+        sockfd: RawFd,
+        devid: u32,
+        speed: UsbSpeed,
+    ) -> anyhow::Result<()> {
         let speed_code = crate::protocol::map_speed(speed);
         let cmd = format!("{} {} {} {}\n", port, sockfd, devid, speed_code);
         let attach_path = self.sysfs_path.join("attach");

@@ -1,4 +1,4 @@
-use crate::{UsbSpeed, UsbDevice};
+use crate::{UsbDevice, UsbSpeed};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub const OP_REQ_DEVLIST: u16 = 0x8005;
@@ -361,14 +361,16 @@ impl UsbipIsoPacketDescriptor {
 impl UsbipUsbDevice {
     pub fn new<D: UsbDevice + ?Sized>(dev: &D) -> anyhow::Result<Self> {
         let desc = dev.device_descriptor()?;
-        let config = dev.config_descriptor(0).unwrap_or_else(|_| crate::UsbConfigDescriptor {
-            num_interfaces: 0,
-            configuration_value: 1,
-            max_power: 500,
-            self_powered: true,
-            remote_wakeup: false,
-            interfaces: vec![],
-        });
+        let config = dev
+            .config_descriptor(0)
+            .unwrap_or_else(|_| crate::UsbConfigDescriptor {
+                num_interfaces: 0,
+                configuration_value: 1,
+                max_power: 500,
+                self_powered: true,
+                remote_wakeup: false,
+                interfaces: vec![],
+            });
 
         let busnum = dev.bus_number();
         let addr = dev.address();
@@ -464,7 +466,7 @@ pub enum UsbipResponse {
     },
     Import {
         status: u32,
-        device: Option<UsbipDeviceDetail>,
+        device: Option<Box<UsbipDeviceDetail>>,
     },
     Submit {
         basic: UsbipHeaderBasic,
@@ -516,7 +518,10 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> UsbipStream
         }
     }
 
-    pub async fn write_handshake_response(&mut self, response: UsbipResponse) -> anyhow::Result<()> {
+    pub async fn write_handshake_response(
+        &mut self,
+        response: UsbipResponse,
+    ) -> anyhow::Result<()> {
         match response {
             UsbipResponse::Devlist { devices } => {
                 let mut buf = Vec::new();
@@ -669,7 +674,6 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> UsbipStream
 }
 
 #[cfg(test)]
-
 mod tests {
     use super::*;
 
@@ -703,7 +707,7 @@ mod tests {
         };
         let bytes = common.to_bytes();
         assert_eq!(bytes, [0x01, 0x11, 0x80, 0x05, 0x00, 0x00, 0x00, 0x2a]);
-        
+
         let deserialized = OpCommon::from_bytes(bytes);
         assert_eq!(deserialized, common);
     }
@@ -808,9 +812,8 @@ mod tests {
         let bytes = cmd_unlink.to_bytes();
         let expected = [
             0x00, 0x00, 0x00, 0x63, // seqnum (99)
-            0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, // 24 bytes of padding
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, // 24 bytes of padding
         ];
         assert_eq!(bytes, expected);
 
@@ -824,9 +827,8 @@ mod tests {
         let bytes = ret_unlink.to_bytes();
         let expected = [
             0xff, 0xff, 0xff, 0x98, // status (-104)
-            0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, // 24 bytes of padding
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, // 24 bytes of padding
         ];
         assert_eq!(bytes, expected);
 
@@ -853,18 +855,28 @@ mod tests {
         assert!(matches!(req, Some(UsbipRequest::Devlist)));
 
         // Host writes empty devlist response
-        host_stream.write_handshake_response(UsbipResponse::Devlist { devices: vec![] }).await.unwrap();
+        host_stream
+            .write_handshake_response(UsbipResponse::Devlist { devices: vec![] })
+            .await
+            .unwrap();
 
         // Client reads response header
         let mut resp_header = [0u8; 8];
-        client_stream.stream.read_exact(&mut resp_header).await.unwrap();
+        client_stream
+            .stream
+            .read_exact(&mut resp_header)
+            .await
+            .unwrap();
         assert_eq!(&resp_header[0..2], &[0x01, 0x11]);
         assert_eq!(&resp_header[2..4], &[0x00, 0x05]); // OP_REP_DEVLIST
 
         let mut ndev_bytes = [0u8; 4];
-        client_stream.stream.read_exact(&mut ndev_bytes).await.unwrap();
+        client_stream
+            .stream
+            .read_exact(&mut ndev_bytes)
+            .await
+            .unwrap();
         let ndev = u32::from_be_bytes(ndev_bytes);
         assert_eq!(ndev, 0);
     }
 }
-

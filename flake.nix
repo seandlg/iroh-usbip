@@ -62,7 +62,25 @@
             rustToolchain
             pkgs.pkg-config
             pkgs.libusb1
+            pkgs.just
           ];
+        };
+
+        checks = {
+          inherit iroh-usbip;
+
+          clippy = craneLib.cargoClippy (commonArgs // {
+            inherit cargoArtifacts;
+            cargoClippyExtraArgs = "--all-targets -- --deny warnings";
+          });
+
+          fmt = craneLib.cargoFmt {
+            inherit src;
+          };
+
+          test = craneLib.cargoTest (commonArgs // {
+            inherit cargoArtifacts;
+          });
         };
       });
 }

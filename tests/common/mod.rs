@@ -1,13 +1,13 @@
 #![allow(dead_code)]
 
+use iroh_usbip::protocol::UsbipIsoPacketDescriptor;
+use iroh_usbip::{
+    MockTransferCallback, MockUsbDevice, UsbConfigDescriptor, UsbDeviceDescriptor, UsbSpeed,
+    engine::run_usbip_session,
+};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio::task::JoinHandle;
-use iroh_usbip::{
-    UsbDeviceDescriptor, UsbConfigDescriptor, UsbSpeed,
-    MockUsbDevice, MockTransferCallback, engine::run_usbip_session,
-};
-use iroh_usbip::protocol::UsbipIsoPacketDescriptor;
 
 pub struct TestContext {
     pub client: DuplexStream,
@@ -97,6 +97,7 @@ impl TestContext {
     }
 
     // Send USBIP_CMD_SUBMIT
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_usbip_cmd_submit(
         &mut self,
         seqnum: u32,
@@ -137,13 +138,30 @@ impl TestContext {
         let mut ret_header = [0u8; 48];
         self.client.read_exact(&mut ret_header).await?;
 
-        let command = u32::from_be_bytes([ret_header[0], ret_header[1], ret_header[2], ret_header[3]]);
+        let command =
+            u32::from_be_bytes([ret_header[0], ret_header[1], ret_header[2], ret_header[3]]);
         assert_eq!(command, 0x0003); // USBIP_RET_SUBMIT (3)
 
-        let seqnum = u32::from_be_bytes([ret_header[4], ret_header[5], ret_header[6], ret_header[7]]);
-        let status = i32::from_be_bytes([ret_header[20], ret_header[21], ret_header[22], ret_header[23]]);
-        let actual_len = i32::from_be_bytes([ret_header[24], ret_header[25], ret_header[26], ret_header[27]]);
-        let number_of_packets = i32::from_be_bytes([ret_header[32], ret_header[33], ret_header[34], ret_header[35]]);
+        let seqnum =
+            u32::from_be_bytes([ret_header[4], ret_header[5], ret_header[6], ret_header[7]]);
+        let status = i32::from_be_bytes([
+            ret_header[20],
+            ret_header[21],
+            ret_header[22],
+            ret_header[23],
+        ]);
+        let actual_len = i32::from_be_bytes([
+            ret_header[24],
+            ret_header[25],
+            ret_header[26],
+            ret_header[27],
+        ]);
+        let number_of_packets = i32::from_be_bytes([
+            ret_header[32],
+            ret_header[33],
+            ret_header[34],
+            ret_header[35],
+        ]);
 
         let mut payload = vec![0u8; actual_len.max(0) as usize];
         if actual_len > 0 {
@@ -161,7 +179,14 @@ impl TestContext {
             }
         }
 
-        Ok((seqnum, status, actual_len, number_of_packets, payload, iso_descs))
+        Ok((
+            seqnum,
+            status,
+            actual_len,
+            number_of_packets,
+            payload,
+            iso_descs,
+        ))
     }
 
     // Send USBIP_CMD_UNLINK
@@ -191,11 +216,18 @@ impl TestContext {
         let mut ret_header = [0u8; 48];
         self.client.read_exact(&mut ret_header).await?;
 
-        let command = u32::from_be_bytes([ret_header[0], ret_header[1], ret_header[2], ret_header[3]]);
+        let command =
+            u32::from_be_bytes([ret_header[0], ret_header[1], ret_header[2], ret_header[3]]);
         assert_eq!(command, 0x0004); // USBIP_RET_UNLINK (4)
 
-        let seqnum = u32::from_be_bytes([ret_header[4], ret_header[5], ret_header[6], ret_header[7]]);
-        let status = i32::from_be_bytes([ret_header[20], ret_header[21], ret_header[22], ret_header[23]]);
+        let seqnum =
+            u32::from_be_bytes([ret_header[4], ret_header[5], ret_header[6], ret_header[7]]);
+        let status = i32::from_be_bytes([
+            ret_header[20],
+            ret_header[21],
+            ret_header[22],
+            ret_header[23],
+        ]);
 
         Ok((seqnum, status))
     }
@@ -271,12 +303,18 @@ impl MockDeviceBuilder {
         self
     }
 
-    pub fn with_kernel_drivers(mut self, kd: Arc<std::sync::Mutex<std::collections::HashMap<u8, bool>>>) -> Self {
+    pub fn with_kernel_drivers(
+        mut self,
+        kd: Arc<std::sync::Mutex<std::collections::HashMap<u8, bool>>>,
+    ) -> Self {
         self.kernel_drivers = Some(kd);
         self
     }
 
-    pub fn with_claimed_interfaces(mut self, ci: Arc<std::sync::Mutex<std::collections::HashSet<u8>>>) -> Self {
+    pub fn with_claimed_interfaces(
+        mut self,
+        ci: Arc<std::sync::Mutex<std::collections::HashSet<u8>>>,
+    ) -> Self {
         self.claimed_interfaces = Some(ci);
         self
     }

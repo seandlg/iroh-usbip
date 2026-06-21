@@ -1,6 +1,6 @@
+use crate::{PhysicalUsbDevice, UsbDevice, UsbDeviceHandle};
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::{UsbDevice, UsbDeviceHandle, PhysicalUsbDevice};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeviceQuery {
@@ -39,23 +39,37 @@ impl DeviceQuery {
     pub fn matches<D: UsbDevice + ?Sized>(&self, device: &D) -> bool {
         if let Some(vid) = self.vendor_id {
             if let Ok(desc) = device.device_descriptor() {
-                if desc.vendor_id != vid { return false; }
-            } else { return false; }
+                if desc.vendor_id != vid {
+                    return false;
+                }
+            } else {
+                return false;
+            }
         }
         if let Some(pid) = self.product_id {
             if let Ok(desc) = device.device_descriptor() {
-                if desc.product_id != pid { return false; }
-            } else { return false; }
+                if desc.product_id != pid {
+                    return false;
+                }
+            } else {
+                return false;
+            }
         }
-        if let Some(bus_num) = self.bus_number {
-            if device.bus_number() != bus_num { return false; }
+        if let Some(bus_num) = self.bus_number
+            && device.bus_number() != bus_num
+        {
+            return false;
         }
-        if let Some(address) = self.address {
-            if device.address() != address { return false; }
+        if let Some(address) = self.address
+            && device.address() != address
+        {
+            return false;
         }
         if let Some(ref bus_id) = self.bus_id {
             let actual = format!("{}-{}", device.bus_number(), device.address());
-            if &actual != bus_id { return false; }
+            if &actual != bus_id {
+                return false;
+            }
         }
         true
     }
@@ -189,18 +203,24 @@ impl<D: UsbDevice + ?Sized> HostDeviceRegistry<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockUsbDevice, UsbSpeed, UsbDeviceDescriptor, UsbConfigDescriptor};
+    use crate::{MockUsbDevice, UsbConfigDescriptor, UsbDeviceDescriptor, UsbSpeed};
 
     #[test]
     fn test_from_cli_args_parsing() {
-        let query = DeviceQuery::from_cli_args(Some("0x1d6b"), Some("0002"), Some(1), Some(2)).unwrap();
+        let query =
+            DeviceQuery::from_cli_args(Some("0x1d6b"), Some("0002"), Some(1), Some(2)).unwrap();
         assert_eq!(query.vendor_id, Some(0x1d6b));
         assert_eq!(query.product_id, Some(0x0002));
         assert_eq!(query.bus_number, Some(1));
         assert_eq!(query.address, Some(2));
     }
 
-    fn make_mock_device(bus_num: u8, dev_addr: u8, vendor_id: u16, product_id: u16) -> Arc<MockUsbDevice> {
+    fn make_mock_device(
+        bus_num: u8,
+        dev_addr: u8,
+        vendor_id: u16,
+        product_id: u16,
+    ) -> Arc<MockUsbDevice> {
         Arc::new(MockUsbDevice {
             bus_num,
             dev_addr,

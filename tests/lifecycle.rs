@@ -1,11 +1,11 @@
 mod common;
 
+use common::{MockDeviceBuilder, TestContext};
+use iroh_usbip::{UsbConfigDescriptor, UsbInterfaceDescriptor, UsbInterfaceSettingDescriptor};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::collections::{HashMap, HashSet};
-use common::{TestContext, MockDeviceBuilder};
-use iroh_usbip::{UsbConfigDescriptor, UsbInterfaceDescriptor, UsbInterfaceSettingDescriptor};
 
 #[tokio::test]
 async fn test_disconnection_teardown() -> anyhow::Result<()> {

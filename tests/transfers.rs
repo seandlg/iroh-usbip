@@ -1,8 +1,8 @@
 mod common;
 
-use std::sync::Arc;
-use common::{TestContext, MockDeviceBuilder};
+use common::{MockDeviceBuilder, TestContext};
 use iroh_usbip::protocol::UsbipIsoPacketDescriptor;
+use std::sync::Arc;
 
 #[tokio::test]
 async fn test_urb_transfer() -> anyhow::Result<()> {
@@ -26,13 +26,14 @@ async fn test_urb_transfer() -> anyhow::Result<()> {
     ctx.send_usbip_cmd_submit(
         10,
         0x00010002,
-        1, // direction: IN
-        0, // ep: 0
-        0, // transfer_flags
-        4, // transfer_buffer_length
+        1,                                                // direction: IN
+        0,                                                // ep: 0
+        0,                                                // transfer_flags
+        4,                                                // transfer_buffer_length
         [0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 0x04, 0x00], // setup
         &[],
-    ).await?;
+    )
+    .await?;
 
     let (seqnum, status, actual_len, number_of_packets, payload, iso_descs) =
         ctx.read_usbip_ret_submit().await?;
@@ -59,11 +60,10 @@ async fn test_urb_unlink() -> anyhow::Result<()> {
     assert_eq!(status, 0);
 
     ctx.send_usbip_cmd_unlink(
-        20,
-        0x00010002,
-        0, // ep: 0
+        20, 0x00010002, 0,  // ep: 0
         10, // unlink_seqnum
-    ).await?;
+    )
+    .await?;
 
     let (seqnum, status) = ctx.read_usbip_ret_unlink().await?;
     assert_eq!(seqnum, 20);
@@ -115,7 +115,8 @@ async fn test_isochronous_transfer_dummy_handling() -> anyhow::Result<()> {
         64,
         [0; 8],
         &[desc1, desc2],
-    ).await?;
+    )
+    .await?;
 
     let (seqnum, status, actual_len, number_of_packets, payload, returned_descs) =
         ctx.read_usbip_ret_submit().await?;
@@ -139,11 +140,10 @@ async fn test_isochronous_transfer_dummy_handling() -> anyhow::Result<()> {
 
     // Verify stream synchronization by sending a subsequent unlink command
     ctx.send_usbip_cmd_unlink(
-        20,
-        0x00010002,
-        0, // ep: 0
+        20, 0x00010002, 0,  // ep: 0
         10, // unlink_seqnum
-    ).await?;
+    )
+    .await?;
 
     let (unlink_seqnum, unlink_status) = ctx.read_usbip_ret_unlink().await?;
     assert_eq!(unlink_seqnum, 20);

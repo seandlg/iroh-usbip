@@ -1,6 +1,6 @@
 mod common;
 
-use common::{TestContext, MockDeviceBuilder};
+use common::{MockDeviceBuilder, TestContext};
 
 #[tokio::test]
 async fn test_op_req_devlist() -> anyhow::Result<()> {
@@ -12,7 +12,7 @@ async fn test_op_req_devlist() -> anyhow::Result<()> {
 
     assert_eq!(ndev, 1);
     assert_eq!(udev_list.len(), 1);
-    
+
     let udev_buf = &udev_list[0];
     let vendor_id = u16::from_be_bytes([udev_buf[300], udev_buf[301]]);
     let product_id = u16::from_be_bytes([udev_buf[302], udev_buf[303]]);

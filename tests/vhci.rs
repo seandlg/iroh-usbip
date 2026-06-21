@@ -1,7 +1,7 @@
+use iroh_usbip::{UsbSpeed, VhciController};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use iroh_usbip::{VhciController, UsbSpeed};
 
 static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -69,7 +69,9 @@ fn test_vhci_attach() {
     let temp_path = setup_temp_sysfs();
     let controller = VhciController::with_path(temp_path.clone());
 
-    controller.attach(3, 42, 0x00010005, UsbSpeed::High).unwrap();
+    controller
+        .attach(3, 42, 0x00010005, UsbSpeed::High)
+        .unwrap();
 
     let attach_file = temp_path.join("attach");
     assert!(attach_file.exists());
