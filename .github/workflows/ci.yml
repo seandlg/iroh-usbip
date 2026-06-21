@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  ci:
+    name: Continuous Integration
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Lix (Nix)
+        uses: samueldr/lix-gha-installer-action@v1
+
+      - name: Setup Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Run hermetic checks
+        run: nix flake check
+
+      - name: Install host kernel modules and tools for E2E
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y linux-modules-extra-"$(uname -r)" usbutils
+
+      - name: Configure root Nix access
+        run: |
+          sudo ln -sf "$(which nix)" /usr/local/bin/nix
+
+      - name: Run E2E Integration Tests
+        run: |
+          sudo nix develop --command scripts/e2e.sh
