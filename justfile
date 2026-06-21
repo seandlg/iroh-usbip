@@ -14,3 +14,7 @@ build:
 # Run the unit and mock integration tests inside the Nix environment
 test:
     nix develop --command cargo test
+
+# Run the E2E integration test on Linux (requires sudo/root privileges)
+test-e2e:
+    sudo nix develop --command scripts/e2e.sh
