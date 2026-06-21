@@ -22,7 +22,8 @@ impl TestContext {
     pub async fn new_multi(devices: Vec<Arc<MockUsbDevice>>) -> Self {
         let (client_stream, host_stream) = tokio::io::duplex(2048);
         let host_handle = tokio::spawn(async move {
-            run_usbip_session(host_stream, devices).await
+            let registry = iroh_usbip::HostDeviceRegistry::new_static(devices);
+            run_usbip_session(host_stream, Arc::new(registry)).await
         });
         Self {
             client: client_stream,

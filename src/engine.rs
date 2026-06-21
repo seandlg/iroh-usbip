@@ -6,7 +6,7 @@ use crate::protocol::{
     UsbipRequest, UsbipResponse, UsbipStream,
 };
 
-pub async fn run_usbip_session<S, D>(stream: S, devices: Vec<Arc<D>>) -> anyhow::Result<()>
+pub async fn run_usbip_session<S, D>(stream: S, registry: Arc<crate::HostDeviceRegistry<D>>) -> anyhow::Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     D: UsbDevice + 'static,
@@ -21,24 +21,21 @@ where
     match req {
         UsbipRequest::Devlist => {
             let mut details = Vec::new();
-            for dev in &devices {
-                let detail = crate::protocol::UsbipDeviceDetail::new(dev.as_ref())?;
+            let query = crate::DeviceQuery::default();
+            let devices = registry.find_devices(&query)?;
+            for entry in devices {
+                let detail = crate::protocol::UsbipDeviceDetail::new(entry.device.as_ref())?;
                 details.push(detail);
             }
             ustream.write_handshake_response(UsbipResponse::Devlist { devices: details }).await?;
         }
         UsbipRequest::Import { busid: req_busid } => {
-            // Find matching device
-            let mut found_device = None;
-            for dev in &devices {
-                let busid_str = format!("{}-{}", dev.bus_number(), dev.address());
-                if busid_str == req_busid {
-                    found_device = Some(dev.clone());
-                    break;
-                }
-            }
+            // Find matching device using registry query
+            let mut query = crate::DeviceQuery::default();
+            query.bus_id = Some(req_busid);
 
-            if let Some(dev) = found_device {
+            if let Ok(entry) = registry.find_single_device(&query) {
+                let dev = entry.device;
                 let mut inner_handle = match dev.open() {
                     Ok(h) => h,
                     Err(err) => {

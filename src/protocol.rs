@@ -338,12 +338,13 @@ impl UsbipUsbDevice {
         let busnum = dev.bus_number();
         let addr = dev.address();
 
-        let path_str = format!("/sys/devices/mock/usb{}/{}-{}", busnum, busnum, addr);
+        let path_buf = crate::HostDeviceRegistry::<D>::sysfs_path(busnum, addr);
+        let path_str = path_buf.to_string_lossy();
         let path_bytes = pad_string(&path_str, 256);
         let mut path = [0u8; 256];
         path.copy_from_slice(&path_bytes);
 
-        let busid_str = format!("{}-{}", busnum, addr);
+        let busid_str = crate::HostDeviceRegistry::<D>::bus_id(busnum, addr);
         let busid_bytes = pad_string(&busid_str, 32);
         let mut busid = [0u8; 32];
         busid.copy_from_slice(&busid_bytes);

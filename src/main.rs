@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use iroh_usbip::{list_physical_devices, UsbDevice, UsbDeviceHandle};
+use iroh_usbip::{HostDeviceRegistry, DeviceQuery};
 use std::sync::Arc;
 use iroh::{Endpoint, endpoint::presets};
 use iroh_tickets::{Ticket, endpoint::EndpointTicket};
@@ -96,116 +96,29 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::List => {
-            let devices = list_physical_devices()?;
+            let registry = HostDeviceRegistry::new_physical()?;
+            let devices = registry.find_devices(&DeviceQuery::default())?;
             if devices.is_empty() {
                 println!("No USB devices found.");
                 return Ok(());
             }
 
             for dev in devices {
-                let bus = dev.bus_number();
-                let addr = dev.address();
-                let desc = match dev.device_descriptor() {
-                    Ok(d) => d,
-                    Err(e) => {
-                        eprintln!("Warning: Failed to get descriptor for device on Bus {} Addr {}: {}", bus, addr, e);
-                        continue;
-                    }
-                };
-
-                let mut manufacturer = None;
-                let mut product = None;
-
-                match dev.open() {
-                    Ok(handle) => {
-                        if desc.manufacturer_string_index.is_some() {
-                            manufacturer = handle.read_manufacturer_string(&desc).ok();
-                        }
-                        if desc.product_string_index.is_some() {
-                            product = handle.read_product_string(&desc).ok();
-                        }
-                    }
-                    Err(_) => {
-                        // Permission denied or device busy. Indicate this if indices are present.
-                        if desc.manufacturer_string_index.is_some() {
-                            manufacturer = Some("<Access Denied>".to_string());
-                        }
-                        if desc.product_string_index.is_some() {
-                            product = Some("<Access Denied>".to_string());
-                        }
-                    }
-                }
-
-                let details = match (manufacturer, product) {
-                    (Some(m), Some(p)) => format!("{} {}", m, p),
-                    (Some(m), None) => m,
-                    (None, Some(p)) => p,
-                    (None, None) => String::new(),
-                };
-
-                if details.is_empty() {
-                    println!(
-                        "Bus {:03} Device {:03}: ID {:04x}:{:04x}",
-                        bus, addr, desc.vendor_id, desc.product_id
-                    );
-                } else {
-                    println!(
-                        "Bus {:03} Device {:03}: ID {:04x}:{:04x} {}",
-                        bus, addr, desc.vendor_id, desc.product_id, details
-                    );
-                }
+                println!("{}", dev.cli_info);
             }
         }
         Commands::Share { vid, pid, bus_id, address } => {
-            let devices = list_physical_devices()?;
-            let mut matched = None;
-            for dev in devices {
-                let bus = dev.bus_number();
-                let addr = dev.address();
-                let desc = match dev.device_descriptor() {
-                    Ok(d) => d,
-                    Err(_) => continue,
-                };
+            let registry = HostDeviceRegistry::new_physical()?;
+            let query = DeviceQuery::from_cli_args(
+                vid.as_deref(),
+                pid.as_deref(),
+                bus_id,
+                address,
+            )?;
+            let matched = registry.find_single_device(&query)?;
+            let dev = matched.device;
 
-                // Match VID
-                if let Some(ref vid_str) = vid {
-                    let val = u16::from_str_radix(vid_str.trim_start_matches("0x"), 16)?;
-                    if desc.vendor_id != val {
-                        continue;
-                    }
-                }
-                // Match PID
-                if let Some(ref pid_str) = pid {
-                    let val = u16::from_str_radix(pid_str.trim_start_matches("0x"), 16)?;
-                    if desc.product_id != val {
-                        continue;
-                    }
-                }
-                // Match Bus ID
-                if let Some(b) = bus_id {
-                    if bus != b {
-                        continue;
-                    }
-                }
-                // Match Address
-                if let Some(a) = address {
-                    if addr != a {
-                        continue;
-                    }
-                }
-
-                matched = Some(dev);
-                break;
-            }
-
-            let dev = match matched {
-                Some(d) => d,
-                None => {
-                    anyhow::bail!("No matching USB device found.");
-                }
-            };
-
-            println!("Sharing USB device Bus {:03} Address {:03}...", dev.bus_number(), dev.address());
+            println!("Sharing USB device {}...", matched.cli_info);
 
             // Initialize Iroh Node
             let endpoint = Endpoint::builder(presets::N0)
@@ -224,7 +137,8 @@ async fn main() -> anyhow::Result<()> {
                 let (send, recv) = conn.accept_bi().await?;
                 let stream = IrohStream { send, recv };
                 println!("Session started. Redirecting USB traffic.");
-                if let Err(e) = iroh_usbip::engine::run_usbip_session(stream, vec![Arc::new(dev)]).await {
+                let static_registry = HostDeviceRegistry::new_static(vec![Arc::clone(&dev)]);
+                if let Err(e) = iroh_usbip::engine::run_usbip_session(stream, Arc::new(static_registry)).await {
                     eprintln!("Session error: {}", e);
                 }
                 println!("Session ended. Detaching client.");

@@ -1,5 +1,8 @@
 pub mod protocol;
 pub mod engine;
+pub mod registry;
+
+pub use registry::{HostDeviceRegistry, DeviceQuery, RegistryDevice};
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -307,14 +310,6 @@ impl UsbDeviceHandle for PhysicalUsbDeviceHandle {
         let idx = desc.serial_number_string_index.ok_or_else(|| anyhow::anyhow!("No serial number string index"))?;
         Ok(self.handle.read_string_descriptor_ascii(idx)?)
     }
-}
-
-pub fn list_physical_devices() -> anyhow::Result<Vec<PhysicalUsbDevice>> {
-    let mut list = Vec::new();
-    for dev in rusb::devices()?.iter() {
-        list.push(PhysicalUsbDevice::new(dev));
-    }
-    Ok(list)
 }
 
 pub type MockTransferCallback = Arc<dyn Fn(String, Vec<u8>) -> anyhow::Result<Vec<u8>> + Send + Sync>;
