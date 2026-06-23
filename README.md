@@ -4,15 +4,18 @@
 
 Secure P2P USB-over-IP. Tunnel physical USB devices to remote clients over encrypted Iroh P2P streams with zero network configuration.
 
-![iroh-usbip demo](docs/assets/demo.gif)
-
 ## OS Support Matrix
 
 | Operating System | Host Role (Share) | Client Role (Attach) | Notes |
 | :--- | :---: | :---: | :--- |
 | **Linux** | ✅ Supported | ✅ Supported | Requires the `vhci-hcd` kernel module for attaching. |
 | **macOS** | ✅ Supported | ❌ Not Supported | Mounting virtual USB devices is not supported on macOS. |
-| **Windows** | ⚠️ Experimental | ❌ Not Supported | Host sharing is experimental (requires associating the device with `WinUSB` via Zadig). |
+| **Windows** | ⚠️ Experimental | ⚠️ Experimental | Host: Requires `WinUSB` driver (via Zadig). Client: Requires Microsoft-signed `usbip-win2` driver. |
+
+> [!NOTE]
+> **Driverless Host Capability**: A key feature of `iroh-usbip` is that it **requires no host-side kernel drivers** on any operating system to share devices, as host-side communication is implemented entirely in user-space. A standard OS-native client driver (like `vhci-hcd` or `usbip-win2`) is still required on the client machine to mount the remote device.
+
+![iroh-usbip demo](docs/assets/demo.gif)
 
 ## Installation
 
@@ -67,9 +70,11 @@ sequenceDiagram
 ## Advanced Installation
 
 ### Windows Support (Untested / Experimental)
-Windows support is experimental. Because of Windows driver models, manual driver setup is required:
-*   **To Share (Host)**: Windows restricts direct user-space USB access. You must associate the physical USB device you want to share with the `WinUSB` driver using [Zadig](https://zadig.akeo.ie/) before sharing.
-*   **To Attach (Client)**: Requires a VHCI driver interface. Install the virtual controller driver from [usbip-win](https://github.com/cezanne/usbip-win).
+
+Windows support is experimental and has not been fully verified on physical hardware. Due to Windows driver models, manual setup is required:
+
+*   **To Share (Host)**: Since Windows restricts direct user-space USB access, you must associate the physical USB device you want to share with Microsoft's generic `WinUSB` driver using [Zadig](https://zadig.akeo.ie/) to expose it to `iroh-usbip`.
+*   **To Attach (Client)**: Install the Microsoft-signed, WHLK-certified virtual controller driver client from [vadimgrn/usbip-win2](https://github.com/vadimgrn/usbip-win2) and ensure that `usbip.exe` is in your system `PATH`. Running `iroh-usbip attach` will automatically spawn `usbip.exe` to register the virtual device with the driver.
 *   **Installer**: Run the Windows installer script in PowerShell:
     ```powershell
     irm https://github.com/seandlg/iroh-usbip/releases/latest/download/iroh-usbip-installer.ps1 | iex

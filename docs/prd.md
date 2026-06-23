@@ -28,7 +28,8 @@ Developers, system administrators, and hardware hobbyists often need to access p
 ## Implementation Decisions
 
 - **Host Engine:** Written in Rust, running in user-space using the `rusb` library to communicate with physical USB devices.
-- **Client Engine:** Interacts directly with OS virtual USB controller drivers (Linux `vhci-hcd` sysfs/ioctl attributes, Windows VHCI via `DeviceIoControl` handles).
+- **Client Engine:** Interacts with OS virtual USB controller drivers. On Linux, this is done directly via the `vhci-hcd` sysfs/ioctl attributes. On Windows, this is done experimentally via subprocess integration with the Microsoft WHLK-certified `usbip-win2` driver client CLI (`usbip.exe`).
+- **Driverless Host Capability:** Unlike native USBIP, `iroh-usbip` requires **no host-side kernel drivers** (such as `usbip-host`) to share USB devices. It communicates with physical USB hardware entirely in user-space using `rusb` (wrapping `libusb`). The client machine still requires OS-native controller drivers (Linux `vhci-hcd` or Windows `usbip-win2`) to mount virtual devices.
 - **Network Transport:** Iroh P2P QUIC streams running on a custom ALPN. The client daemon hosts a local loopback TCP port to interface with the local OS kernel, proxying the bytes transparently to the Iroh stream.
 - **Wire Format:** Tunnel raw, un-modified USBIP protocol packets (headers and payloads) directly over Iroh streams.
 - **Authentication & Authorization:** Connection tickets act as secret capabilities. Connections are restricted to a single session per ticket, terminating the sharing daemon on disconnect.
@@ -48,3 +49,4 @@ Developers, system administrators, and hardware hobbyists often need to access p
 - macOS client support (mounting remote devices on macOS).
 - Native kernel host-side bindings (e.g., using `usbip-host` kernel module).
 - Persistent daemon mode/PID tracking in the CLI (backgrounding is left to system tools like `systemd` or `tmux`).
+

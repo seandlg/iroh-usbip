@@ -179,9 +179,18 @@ async fn main() -> anyhow::Result<()> {
         Commands::Attach { ticket: ticket_str } => {
             let vhci = iroh_usbip::VhciController::new_auto(is_mock);
             if !is_mock && !vhci.is_available() {
-                anyhow::bail!(
-                    "Linux VHCI kernel driver (vhci-hcd) is not available. Please load it with 'sudo modprobe vhci-hcd'."
-                );
+                #[cfg(target_os = "windows")]
+                {
+                    anyhow::bail!(
+                        "Windows VHCI driver / usbip utility not found. Please ensure usbip-win2 is installed and usbip.exe is in your PATH."
+                    );
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    anyhow::bail!(
+                        "Linux VHCI kernel driver (vhci-hcd) is not available. Please load it with 'sudo modprobe vhci-hcd'."
+                    );
+                }
             }
 
             let ticket = EndpointTicket::decode_string(&ticket_str)?;
@@ -300,82 +309,158 @@ async fn main() -> anyhow::Result<()> {
                         eprintln!("Mock kernel client error: {}", e);
                     }
                 });
-            } else {
-                // 4. Connect client TcpStream to local proxy
-                let mut tcp_client =
-                    tokio::net::TcpStream::connect(format!("127.0.0.1:{}", local_port)).await?;
 
-                // 5. Perform OP_REQ_IMPORT handshake on the client TcpStream
-                let mut import_req = Vec::new();
-                import_req.extend_from_slice(&[
-                    0x01, 0x11, // version
-                    0x80, 0x03, // OP_REQ_IMPORT
-                    0x00, 0x00, 0x00, 0x00, // status
-                ]);
-                import_req.extend_from_slice(&iroh_usbip::protocol::pad_string(&busid_str, 32));
-                tcp_client.write_all(&import_req).await?;
-                tcp_client.flush().await?;
+                println!("Device is now connected. Press Ctrl+C to disconnect.");
 
-                let mut import_header = [0u8; 8];
-                tcp_client.read_exact(&mut import_header).await?;
-                if import_header[0..2] != [0x01, 0x11] || import_header[2..4] != [0x00, 0x03] {
-                    anyhow::bail!("Invalid handshake response from local proxy");
-                }
-                let import_status = u32::from_be_bytes([
-                    import_header[4],
-                    import_header[5],
-                    import_header[6],
-                    import_header[7],
-                ]);
-                if import_status != 0 {
-                    anyhow::bail!("Import handshake failed with status: {}", import_status);
-                }
-
-                // Discard the returned 312 bytes from the stream
-                let mut discard_buf = [0u8; 312];
-                tcp_client.read_exact(&mut discard_buf).await?;
-
-                // 6. Convert TcpStream to RawFd using into_std & into_raw_fd
-                let std_stream = tcp_client.into_std()?;
-
+                // Capture shutdown signals (Ctrl+C / SIGINT / SIGTERM)
                 #[cfg(unix)]
-                let sockfd = {
-                    use std::os::unix::io::IntoRawFd;
-                    std_stream.into_raw_fd()
-                };
-                #[cfg(not(unix))]
-                let sockfd = 0;
-
-                // 7. Attach to VHCI
-                vhci.attach(port, sockfd, devid, speed)?;
-                println!(
-                    "Successfully attached virtual device to VHCI port {}!",
-                    port
-                );
-            }
-            println!("Device is now connected. Press Ctrl+C to disconnect.");
-
-            // 8. Capture shutdown signals (Ctrl+C / SIGINT / SIGTERM)
-            #[cfg(unix)]
-            {
-                use tokio::signal::unix::{SignalKind, signal};
-                let mut sigint = signal(SignalKind::interrupt())?;
-                let mut sigterm = signal(SignalKind::terminate())?;
-                tokio::select! {
-                    _ = sigint.recv() => {}
-                    _ = sigterm.recv() => {}
+                {
+                    use tokio::signal::unix::{SignalKind, signal};
+                    let mut sigint = signal(SignalKind::interrupt())?;
+                    let mut sigterm = signal(SignalKind::terminate())?;
+                    tokio::select! {
+                        _ = sigint.recv() => {}
+                        _ = sigterm.recv() => {}
+                    }
                 }
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = tokio::signal::ctrl_c().await;
-            }
+                #[cfg(not(unix))]
+                {
+                    let _ = tokio::signal::ctrl_c().await;
+                }
 
-            println!("\nDetaching virtual device from port {}...", port);
-            if let Err(e) = vhci.detach(port) {
-                eprintln!("Failed to detach port {}: {}", port, e);
+                println!("\nDetaching virtual device from port {}...", port);
+                if let Err(e) = vhci.detach(port) {
+                    eprintln!("Failed to detach port {}: {}", port, e);
+                } else {
+                    println!("Successfully detached device.");
+                }
             } else {
-                println!("Successfully detached device.");
+                #[cfg(target_os = "windows")]
+                {
+                    println!("Attaching device using usbip.exe...");
+                    let mut cmd = tokio::process::Command::new("usbip");
+                    cmd.args(&[
+                        "--tcp-port",
+                        &local_port.to_string(),
+                        "attach",
+                        "-r",
+                        "127.0.0.1",
+                        "-b",
+                        &busid_str,
+                        "-t",
+                    ]);
+                    cmd.stdout(std::process::Stdio::piped());
+                    cmd.stderr(std::process::Stdio::piped());
+
+                    let mut child = cmd.spawn()?;
+                    let output = child.wait_with_output().await?;
+                    if !output.status.success() {
+                        let err_msg = String::from_utf8_lossy(&output.stderr);
+                        anyhow::bail!("usbip attach command failed: {}", err_msg);
+                    }
+
+                    let out_str = String::from_utf8_lossy(&output.stdout);
+                    let parsed_port = out_str.trim().parse::<u32>().ok();
+
+                    if let Some(p) = parsed_port {
+                        println!("Successfully attached virtual device to VHCI port {}!", p);
+                        println!("Device is now connected. Press Ctrl+C to disconnect.");
+
+                        let _ = tokio::signal::ctrl_c().await;
+
+                        println!("\nDetaching virtual device from port {}...", p);
+                        let mut detach_cmd = tokio::process::Command::new("usbip");
+                        detach_cmd.args(&["detach", "-p", &p.to_string()]);
+                        let status = detach_cmd.status().await?;
+                        if status.success() {
+                            println!("Successfully detached device.");
+                        } else {
+                            eprintln!("Failed to detach port {}.", p);
+                        }
+                    } else {
+                        anyhow::bail!("Failed to parse port number from usbip output: {}", out_str);
+                    }
+                }
+
+                #[cfg(not(target_os = "windows"))]
+                {
+                    // 4. Connect client TcpStream to local proxy
+                    let mut tcp_client =
+                        tokio::net::TcpStream::connect(format!("127.0.0.1:{}", local_port)).await?;
+
+                    // 5. Perform OP_REQ_IMPORT handshake on the client TcpStream
+                    let mut import_req = Vec::new();
+                    import_req.extend_from_slice(&[
+                        0x01, 0x11, // version
+                        0x80, 0x03, // OP_REQ_IMPORT
+                        0x00, 0x00, 0x00, 0x00, // status
+                    ]);
+                    import_req.extend_from_slice(&iroh_usbip::protocol::pad_string(&busid_str, 32));
+                    tcp_client.write_all(&import_req).await?;
+                    tcp_client.flush().await?;
+
+                    let mut import_header = [0u8; 8];
+                    tcp_client.read_exact(&mut import_header).await?;
+                    if import_header[0..2] != [0x01, 0x11] || import_header[2..4] != [0x00, 0x03] {
+                        anyhow::bail!("Invalid handshake response from local proxy");
+                    }
+                    let import_status = u32::from_be_bytes([
+                        import_header[4],
+                        import_header[5],
+                        import_header[6],
+                        import_header[7],
+                    ]);
+                    if import_status != 0 {
+                        anyhow::bail!("Import handshake failed with status: {}", import_status);
+                    }
+
+                    // Discard the returned 312 bytes from the stream
+                    let mut discard_buf = [0u8; 312];
+                    tcp_client.read_exact(&mut discard_buf).await?;
+
+                    // 6. Convert TcpStream to RawFd using into_std & into_raw_fd
+                    let std_stream = tcp_client.into_std()?;
+
+                    #[cfg(unix)]
+                    let sockfd = {
+                        use std::os::unix::io::IntoRawFd;
+                        std_stream.into_raw_fd()
+                    };
+                    #[cfg(not(unix))]
+                    let sockfd = 0;
+
+                    // 7. Attach to VHCI
+                    vhci.attach(port, sockfd, devid, speed)?;
+                    println!(
+                        "Successfully attached virtual device to VHCI port {}!",
+                        port
+                    );
+
+                    println!("Device is now connected. Press Ctrl+C to disconnect.");
+
+                    // 8. Capture shutdown signals (Ctrl+C / SIGINT / SIGTERM)
+                    #[cfg(unix)]
+                    {
+                        use tokio::signal::unix::{SignalKind, signal};
+                        let mut sigint = signal(SignalKind::interrupt())?;
+                        let mut sigterm = signal(SignalKind::terminate())?;
+                        tokio::select! {
+                            _ = sigint.recv() => {}
+                            _ = sigterm.recv() => {}
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = tokio::signal::ctrl_c().await;
+                    }
+
+                    println!("\nDetaching virtual device from port {}...", port);
+                    if let Err(e) = vhci.detach(port) {
+                        eprintln!("Failed to detach port {}: {}", port, e);
+                    } else {
+                        println!("Successfully detached device.");
+                    }
+                }
             }
 
             proxy_handle.abort();

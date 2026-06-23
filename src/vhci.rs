@@ -82,7 +82,17 @@ hs 0000 004 000 00000000 000000 0-0
 
     /// Check if the VHCI kernel driver is available.
     pub fn is_available(&self) -> bool {
-        self.sysfs_path.exists()
+        if self.mock {
+            return true;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            check_usbip_in_path()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.sysfs_path.exists()
+        }
     }
 
     /// Find the first free port on the VHCI controller.
@@ -176,4 +186,18 @@ hs 0000 004 000 00000000 000000 0-0
         }
         Ok(())
     }
+}
+
+#[cfg(target_os = "windows")]
+fn check_usbip_in_path() -> bool {
+    if let Some(paths) = std::env::var_os("PATH") {
+        for path in std::env::split_paths(&paths) {
+            let p_exe = path.join("usbip.exe");
+            let p_cmd = path.join("usbip");
+            if p_exe.exists() || p_cmd.exists() {
+                return true;
+            }
+        }
+    }
+    false
 }
